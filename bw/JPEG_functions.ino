@@ -8,12 +8,7 @@
   ==================================================================================*/
 
 #include <U8g2lib.h>        // https://github.com/olikraus/u8g2
-#ifdef U8X8_HAVE_HW_SPI
-#include <SPI.h>
-#endif
-#ifdef U8X8_HAVE_HW_I2C
-#include <Wire.h>
-#endif
+#include "gfxlayer.h"
 #include <JPEGDecoder.h>    // https://github.com/Bodmer/JPEGDecoder
 
 // extern void drawRGBBitmap(uint16_t x, uint16_t y, uint16_t *pImg, uint16_t win_w, uint16_t win_h);
@@ -44,8 +39,8 @@ void drawJpeg_SPIFFS(const char *filename) {
   boolean decoded = JpegDec.decodeFsFile(filename);  // or pass the filename (leading / distinguishes SPIFFS files)
                                    // Note: the filename can be a String or character array type
   if (decoded) {
-    //uint16_t xpos = (u8g2.getDisplayWidth()-JpegDec.width)/2,
-    //         ypos = (u8g2.getDisplayHeight()-JpegDec.height)/2;
+    //uint16_t xpos = (gfx_getScreenWidth()-JpegDec.width)/2,
+    //         ypos = (gfx_getScreenHeight()-JpegDec.height)/2;
              
     // prepare a framebuffer
     if(!prepare_framebuffer(JpegDec.width, JpegDec.height)) return;
@@ -115,9 +110,9 @@ void jpegRender(int xpos, int ypos) {
         memcpy(pImg + h * win_w, pImg + (h + 1) * mcu_w, win_w << 1);
 
     // draw image MCU block only if it will fit on the screen
-    if ( ( mcu_x + win_w) <= u8g2.getDisplayWidth() && ( mcu_y + win_h) <= u8g2.getDisplayHeight())
+    if ( ( mcu_x + win_w) <= gfx_getScreenWidth() && ( mcu_y + win_h) <= gfx_getScreenHeight())
         drawRGBTile(mcu_x, mcu_y, pImg, win_w, win_h);
-    else if ( ( mcu_y + win_h) >= u8g2.getDisplayHeight()) 
+    else if ( ( mcu_y + win_h) >= gfx_getScreenHeight()) 
         JpegDec.abort();
   }
 

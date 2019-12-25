@@ -5,9 +5,11 @@ Tobis General Display
 based on: the sketch on the German website https://www.az-delivery.de/blogs/azdelivery-blog-fur-arduino-und-raspberry-pi/captive-portal-blog-teil-4-bmp-dateienanzeige-auf-8x8-matrix-display
 by Tobias Kuch
 
+u8g2 variant
+
 changes/extensions:
 
-- display: black&white only SSD1306 OLED (or else, using u8g2lib) with higher resolution (128x64 e.g.) instead of 8x8 LED matrix wiht colour capability
+- display: black&white only SSD1306 OLED (or else, using u8g2lib) with higher resolution (128x64 e.g.) instead of 8x8 LED matrix with colour capability
 - smaller images are displayed centered, not in the top left corner
 - slideshow function: the MCU can display all suitable images cyclically
 - Floyd-Steinberg-Dithering for multicolor images (makes sense on b&w or grayscale display)
@@ -41,7 +43,8 @@ changes/extensions:
 #define GPIO_OUT_W1TC_REG (DR_REG_GPIO_BASE + 0x000c)
 
 // u8g2 object:
-U5G2_CONSTRUCTION;
+U8G2_CONSTRUCTION;
+#include "gfxlayer.h"       // << this unfortunately requires the ucg/u8g2 object to be declared before
 
 static const byte WiFiPwdLen = WIFIPWDLEN;
 static const byte APSTANameLen = APSTANAMELEN;
@@ -53,12 +56,15 @@ int slideshow_current_index = 0;        // next image to display
 int slideshow_num_images = 0;
 char slideshow_filenames[SLIDESHOW_MAX_IMAGES][MAX_FILENAME_LEN+1];
 
+// CSS is used several times:
+static const char *css_definition = "<style type='text/css'><!-- * {font-family:sans-serif;} "
+        "DIV.container {min-height: 10em; display: table-cell; vertical-align: middle} "
+        ".button {height:35px; width:90px; font-size:16px} "
+        "body {background-color: powderblue;} --></style>";
 // these two HTML lines occur several times:
-static const char *html_footer = 
-       "<footer><p>Programmed and designed by: Tobias Kuch, (u8g2 output:) Arnold Schommer</p>"
+static const char *html_footer =
+       "<footer><p>Programmed and designed by: Tobias Kuch,<br>(u8g2/ucglib output:) Arnold Schommer</p>"
        "<p>source hosted at <a href='https://github.com/a-schommer/Tobis-General-Display'>GitHub</a>.</p></footer>";
-//       "<footer><p>Programmed and designed by: Tobias Kuch, (SSD1306:) Arnold Schommer</p>"
-//       "<p>Contact information: <a href='mailto:tobias.kuch@googlemail.com'>tobias.kuch@googlemail.com</a>.</p></footer>";
 
 struct WiFiEEPromData
   {
@@ -114,8 +120,7 @@ bool handleFileRead(String path);       // send the right file to the client (if
 void handleFileUpload();                // upload a new file to the SPIFFS
 String temp ="";
 
-static const byte BRIGHTNESS = 100;     // PresetBrightness
-static uint8_t kMatrixWidth, kMatrixHeight;
+// static uint8_t kMatrixWidth, kMatrixHeight;
 
 void setup()
 {
@@ -128,16 +133,13 @@ void setup()
   bool CInitHTTPServer  = false;
   byte len;
   Serial.begin(BAUDS);
-   while (!Serial) {
-    ; // wait for serial port to connect. Needed for native USB
-  }
+  while (!Serial) // wait for serial port to connect. Needed for native USB
+     delay(1);
   Serial.println("Serial Interface initalized at "+String(BAUDS)+" Baud.");
-  u8g2.begin();
-  kMatrixWidth  = u8g2.getDisplayWidth();
-  kMatrixHeight = u8g2.getDisplayHeight();
-  u8g2.setContrast(BRIGHTNESS);
-  u8g2.sendBuffer();
-  u8g2.setDrawColor(1);
+  gfx_init();
+#ifdef SPECIAL_INITIALIZATION
+    SPECIAL_INITIALIZATION();
+#endif
   WiFi.setAutoReconnect (false);
   WiFi.persistent(false);
   WiFi.disconnect();
@@ -186,8 +188,8 @@ void setup()
       InitalizeHTTPServer();
       SetDefaultWiFiConfig();
       saveCredentials();
-      u8g2.clear();
-      u8g2.sendBuffer();
+      gfx_clearScreen();
+      gfx_flushBuffer();
     }
 }
 
@@ -281,7 +283,7 @@ byte ConnectWifiAP()
       Serial.print(F("."));
       // statement(s)
     }
-  if (connRes == 3 ) 
+  if (connRes == 3 )
   {
      WiFi.setAutoReconnect(true); // Set whether module will attempt to reconnect to an access point in case it is disconnected.
      // Setup MDNS responder
@@ -297,7 +299,7 @@ byte ConnectWifiAP()
       i++;
       Serial.print(F("."));
     }
-  if (connRes == 4 ) 
+  if (connRes == 4 )
   {
     Serial.println(F("STA Pwd Err"));
     Serial.println(MyWiFiConfig.APSTAName);
@@ -362,19 +364,19 @@ return BMPData;
 
 //#############################################################################
 // JPEG support framework
-// Bodmers JPEG lib is optimized for low memory usage, which makes sense for 
+// Bodmers JPEG lib is optimized for low memory usage, which makes sense for
 // Arduino but has the disadvantage that it draws the image tile by tile -
 // making Floyd-Steinberg-dithering (almost) impossible.
 // I add another "Framebuffer" to change the render process:
 // first, Bodmers jpeg lib writes to a framebuffer via repeated drawRGBBitmap()
 // then the whole framebuffer is converted to a b/w image, doing Floyd-
 // Steinberg-dithering on the fly.
-// in fact, the framebuffer does not hold the colors as given by the jpeg 
-// output but int8_t's of the added luminances (i.e. 0...3*255 scaled down to 
+// in fact, the framebuffer does not hold the colors as given by the jpeg
+// output but int8_t's of the added luminances (i.e. 0...3*255 scaled down to
 // 0..127).
-// (scaling fown from int16_t to int8_t is not really necessary concerning 
+// (scaling fown from int16_t to int8_t is not really necessary concerning
 //  memory consumption, but i see no relevant quality drawback on the way to
-//  1bit resullts and shrinking the buffer should gain performance by better 
+//  1bit resullts and shrinking the buffer should gain performance by better
 //  caching effects)
 // there are three (main) procedures:
 // prepare_framebuffer()
@@ -383,27 +385,27 @@ return BMPData;
 //          returned - with the backdraw it is allocated for full display size,
 //          not just as required for the current image.
 // drawRGBTile()
-//          "paints" a rectangle given as an RGB565-array to a certain 
+//          "paints" a rectangle given as an RGB565-array to a certain
 //          location within the framebuffer
 // framebuffer_to_display()
-//          "paints" the framebuffer content to the SSD1306, applying 
+//          "paints" the framebuffer content to the SSD1306, applying
 //          Floyd-Steinberg-dithering
 
 // define a "scaling" factor for Floyd-Steinberg-dithering (must be <128! )
 #define FS_SCALE_MAX    100
-/* problem: if e.g. the colours range from 0-127, intermediate values (with 
+/* problem: if e.g. the colours range from 0-127, intermediate values (with
     error coefficients) can easily exceed 127 (by an amount i do not know).
-    But if i use int8_t as datatype, this causes "overflows" like 
+    But if i use int8_t as datatype, this causes "overflows" like
     127+2 "=" -127.
     To prevent this, i use some "safety reserve"
-    Further, to make the threshold more symmetric, this value should 
+    Further, to make the threshold more symmetric, this value should
     preferrably be even.
 */
 
 int8_t *fb = NULL;
-// used like fb[kMatrixHeight][kMatrixWidth]
+// used like fb[gfx_getScreenHeight()][gfx_getScreenWidth()]
 // reason for this strange (logic) organization:
-// i want to keep adjacent x-values adjacent, not adjacent y-values as 
+// i want to keep adjacent x-values adjacent, not adjacent y-values as
 // the dithering walks throuh it line by line, columns iterated in "the inner" loop
 
 bool prepare_framebuffer(const uint16_t width, const uint16_t height)
@@ -411,15 +413,15 @@ bool prepare_framebuffer(const uint16_t width, const uint16_t height)
 {
     if(!fb)
     {   // allocate the framebuffer for full display size
-        fb = (int8_t *)malloc(kMatrixWidth*kMatrixHeight*sizeof(*fb));
+        fb = (int8_t *)malloc(gfx_getScreenWidth()*gfx_getScreenHeight()*sizeof(*fb));
         if(!fb)
         {
-            Serial.println("can't alloc framebuffer, "+String(kMatrixWidth*kMatrixHeight*sizeof(*fb))+" bytes unavailable");
+            Serial.println("can't alloc framebuffer, "+String(gfx_getScreenWidth()*gfx_getScreenHeight()*sizeof(*fb))+" bytes unavailable");
             return false;
         }
     }
     // clear the relevant number of rows, all columns (reducing the columns might save some writes but require a loop...)
-    memset((void *)fb, 0, height * kMatrixWidth * sizeof(*fb));
+    memset((void *)fb, 0, height * gfx_getScreenWidth() * sizeof(*fb));
     return true;
 }
 
@@ -430,22 +432,22 @@ void drawRGBTile(uint16_t x, uint16_t y, uint16_t *pImg, uint16_t width, uint16_
 {
     // Serial.println("drawRGBTile("+String(x)+", "+String(y)+", *pImg, "+String(width)+", "+String(height)+")");
 
-    while(height >= 0)
+    while(height > 0)
     {
         uint16_t cx;
-        
-        if(y >= kMatrixHeight)  return; // abort if screen is left
- 
+
+        if(y >= gfx_getScreenHeight())  return; // abort if screen is left
+
         for(cx=0; cx<width; ++cx)
         {
-            if(x+cx < kMatrixWidth) 
+            if(x+cx < gfx_getScreenWidth())
             {   // sum up the rgb parts of the RGB565-value at *pImg to one value:
                 int16_t brightness = ((*pImg >> 8) & 0xf8) +  // r
                                      ((*pImg >> 3) & 0xfc) +  // g
                                      ((*pImg << 3) & 0xf8);   // b
                 // save the "result", mapped to 0..FS_SCALE_MAX
-                fb[x+cx+y*kMatrixWidth] = map(brightness, 0,0xf8+0xfc+0xf8, 0,FS_SCALE_MAX);
-                    // 0xf8+0xfc+0xf8: you might expect the maximum of the brightness from r+g+b (8bit) to be 255, 
+                fb[x+cx+y*gfx_getScreenWidth()] = map(brightness, 0,0xf8+0xfc+0xf8, 0,FS_SCALE_MAX);
+                    // 0xf8+0xfc+0xf8: you might expect the maximum of the brightness from r+g+b (8bit) to be 255,
                     // but the values are RGB565, not RGB888, and RGB565 allows maxima of 0xf8/0xfc/0xf8.
             }
             ++pImg; // advance in the buffer
@@ -455,7 +457,7 @@ void drawRGBTile(uint16_t x, uint16_t y, uint16_t *pImg, uint16_t width, uint16_
     }
 }
 
-// "paint" the framebuffer content to the SSD1306, applying 
+// "paint" the framebuffer content to the SSD1306, applying
 // Floyd-Steinberg-dithering
 void framebuffer_to_display(uint16_t width, uint16_t height)
 {
@@ -463,8 +465,8 @@ void framebuffer_to_display(uint16_t width, uint16_t height)
            *fsd_this_line, *fsd_next_line;  // these switch between first and second "half"/line of fsd_error_buffer
 #define FSD_LINESIZE    ((width)+2)
 #define FSD_INDEX(x)    ((x)+1)
-    uint16_t offset_x = (kMatrixWidth -width )/2,
-             offset_y = (kMatrixHeight-height)/2;
+    uint16_t offset_x = (gfx_getScreenWidth() -width )/2,
+             offset_y = (gfx_getScreenHeight()-height)/2;
 
     // prepare a buffer of two lines plus(!) two "pixels" each for error coefficients of Floyd-Steinberg-dithering
     fsd_error_buffer = (int8_t *) calloc(2*FSD_LINESIZE, sizeof(*fsd_error_buffer));
@@ -477,12 +479,12 @@ void framebuffer_to_display(uint16_t width, uint16_t height)
     fsd_this_line = fsd_error_buffer;
     fsd_next_line = fsd_error_buffer+FSD_LINESIZE;
 
-    u8g2.clear();
+    gfx_clearScreen();
     for (uint16_t row = 0; row < height; row++) // for each line
     {
         // swap lines concerning Floyd-Steinberg buffer; clear next line
         if(row>0)
-        { 
+        {
             int8_t *h;
             h=fsd_this_line;
             fsd_this_line=fsd_next_line;
@@ -490,14 +492,14 @@ void framebuffer_to_display(uint16_t width, uint16_t height)
             // clear next line error buffer
             memset(fsd_next_line, 0, FSD_LINESIZE*sizeof(*fsd_error_buffer));
         }
-        
+
         for (uint16_t col = 0; col < width; col++) // for each pixel
         {
-            int8_t setpoint = fb[col+row*kMatrixWidth] + fsd_this_line[FSD_INDEX(col)],
+            int8_t setpoint = fb[col+row*gfx_getScreenWidth()] + fsd_this_line[FSD_INDEX(col)],
                    real, qerror;
             if(setpoint > FS_SCALE_MAX/2)
             {
-                u8g2.drawPixel(col+offset_x, row+offset_y);
+                gfx_setPixel(col+offset_x, row+offset_y);
                 real = FS_SCALE_MAX;
             }
             else
@@ -513,7 +515,7 @@ void framebuffer_to_display(uint16_t width, uint16_t height)
         } // end pixel
       } // end line
     free(fsd_error_buffer);
-    u8g2.sendBuffer(); // Show results :)
+    gfx_flushBuffer(); // Show results :)
 }
 
 // end of JPEG support framework
@@ -557,7 +559,7 @@ void drawBitmap_SPIFFS(const char *filename)
 #define FSD_INDEX(x)    ((x)+1)
       // reason for "+1": the dithering will always "postpone" a part of the error to the some pixels left and right of the current one -
       // i do not deal with the edges, i just make them "part of what is buffered" to prevent buffer overflows etc. but never read from them.
-        
+
       valid = true;
       Serial.print(F("File name: "));
       Serial.println(filename);
@@ -573,7 +575,7 @@ void drawBitmap_SPIFFS(const char *filename)
       Serial.print(width);
       Serial.print('*');
       Serial.println(height);
-      
+
       if(depth == 24)
       {   // prepare a buffer of two lines plus(!) two "pixels" each for error coefficients of Floyd-Steinberg-dithering
           fsd_error_buffer = (int16_t *) calloc(2*FSD_LINESIZE, sizeof(*fsd_error_buffer));
@@ -598,13 +600,13 @@ void drawBitmap_SPIFFS(const char *filename)
         height = -height;
         flip = false;
       }
-      u8g2.clear();
-      uint16_t w = width,  offset_x = (kMatrixWidth-w)/2;
-      uint16_t h = height, offset_y = (kMatrixHeight-h)/2;
+      gfx_clearScreen();
+      uint16_t w = width,  offset_x = (gfx_getScreenWidth()-w)/2;
+      uint16_t h = height, offset_y = (gfx_getScreenHeight()-h)/2;
       size_t buffidx = sizeof(buffer); // force buffer load
       for (uint16_t row = 0; row < h; row++) // for each line
       {
-        pos = imageOffset + 
+        pos = imageOffset +
               (flip ? ((height - 1 - row) * rowSize) :  // Bitmap is stored bottom-to-top order (normal BMP)
                       (row * rowSize) );                // Bitmap is stored top-to-bottom
         if (file.position() != pos)
@@ -616,7 +618,7 @@ void drawBitmap_SPIFFS(const char *filename)
         }
         // swap lines concerning Floyd-Steinberg buffer; clear next line
         if((depth == 24) && (row>0))
-        { 
+        {
             int16_t *h;
             h=fsd_this_line;
             fsd_this_line=fsd_next_line;
@@ -624,7 +626,7 @@ void drawBitmap_SPIFFS(const char *filename)
             // clear next line error buffer
             memset(fsd_next_line, 0, FSD_LINESIZE*sizeof(*fsd_error_buffer));
         }
-        
+
         uint8_t bits;
         for (uint16_t col = 0; col < w; col++) // for each pixel
         {
@@ -641,7 +643,7 @@ void drawBitmap_SPIFFS(const char *filename)
                 if (0 == col % 8)
                     bits = buffer[buffidx++] ^ inverter;
                 if(bits & 0x80)
-                    u8g2.drawPixel(col+offset_x, row+offset_y);
+                    gfx_setPixel(col+offset_x, row+offset_y);
                 bits <<= 1;
               }
               break;
@@ -654,7 +656,7 @@ void drawBitmap_SPIFFS(const char *filename)
                         real, qerror;
                 if(setpoint > 255*3/2)
                 {
-                    u8g2.drawPixel(col+offset_x, row+offset_y);
+                    gfx_setPixel(col+offset_x, row+offset_y);
                     real = 255*3;
                 }
                 else
@@ -673,7 +675,7 @@ void drawBitmap_SPIFFS(const char *filename)
         } // end pixel
       } // end line
      if(depth == 24) free(fsd_error_buffer);
-     u8g2.sendBuffer(); // Show results :)
+     gfx_flushBuffer(); // Show results :)
     }
   }
   file.close();
@@ -717,11 +719,9 @@ void handleDisplayFS() {                     // HTML Filesystem
   server.send ( 200, "text/html", temp );
   temp += "<!DOCTYPE HTML><html lang='de'><head><meta charset='UTF-8'><meta name= viewport content='width=device-width, initial-scale=1.0,'>";
   server.sendContent(temp);
+  server.sendContent(css_definition);
   temp = "";
-  temp += "<style type='text/css'><!-- DIV.container { min-height: 10em; display: table-cell; vertical-align: middle }.button {height:35px; width:90px; font-size:16px}";
-  server.sendContent(temp);
-  temp = "";
-  temp += "body {background-color: powderblue;}</style><head><title>" PROJECT_TITLE " - File System Manager</title></head>";
+  temp += "<title>" PROJECT_TITLE " - File System Manager</title></head>";
   temp += "<h2>Serial Peripheral Interface Flash Filesystem</h2><body><left>";
   server.sendContent(temp);
   temp = "";
@@ -866,7 +866,7 @@ void drawAnyImageType(const char *filename)
     char *ext = strrchr(filename, '.');
     if(!ext)    return; // no extension => we're unable to detect the filetype => we can't call the *corresponding* display method
     ++ext;  // skip '.' itself
-          
+
     if(strcasecmp(ext, "bmp") == 0)
         drawBitmap_SPIFFS(filename);
     else if(strcasecmp(ext, "jpg") == 0 || strcasecmp(ext, "jpeg") == 0)
@@ -889,11 +889,10 @@ void handleRoot() {
   server.send ( 200, "text/html", temp );   // Speichersparen - Schon mal dem Client senden
   temp = "";
   temp += "<!DOCTYPE HTML><html lang='de'><head><meta charset='UTF-8'><meta name= viewport content='width=device-width, initial-scale=1.0,'>";
-  temp += "<style type='text/css'><!-- * { font-family:syns-serif; } DIV.container { min-height: 10em; display: table-cell; vertical-align: middle }.button {height:35px; width:90px; font-size:16px}";
   server.sendContent(temp);
+  server.sendContent(css_definition);
   temp = "";
-  temp += "body {background-color: powderblue;}</style>";
-  temp += "<head><title>" PROJECT_TITLE "</title></head>";
+  temp += "<title>" PROJECT_TITLE "</title></head>";
   temp += "<h2>LED Display</h2>";
   temp += "<body>";
   server.sendContent(temp);
@@ -908,16 +907,16 @@ if (server.args() > 0) // Parameter wurden ubergeben
   {
     if (server.arg("PicSelect") == "off")  // Clear Display
       {
-        u8g2.clear();
-        u8g2.sendBuffer();
-      } 
+        gfx_clearScreen();
+        gfx_flushBuffer();
+      }
     else
       {
         drawAnyImageType(server.arg("PicSelect").c_str()); // Bild gewählt. Display inhalt per Picselect hergstellt
       }
   }
 }
-  temp += "<table border=2 bgcolor = white ><caption><p><h3>Available Pictures in SPIIFS for "+String(kMatrixWidth)+"*"+String(kMatrixHeight)+" Display</h2></p></caption>";
+  temp += "<table border=2 bgcolor = white ><caption><p><h3>Available Pictures in SPIIFS for "+String(gfx_getScreenWidth())+"*"+String(gfx_getScreenHeight())+" Display</h2></p></caption>";
   temp += "<form>";
   temp += "<tr><th><input type='radio' name='PicSelect' value = 'off' checked> Clear Display<br></th></tr>";
   temp += "<tr><th>";
@@ -932,7 +931,7 @@ if (server.args() > 0) // Parameter wurden ubergeben
     if(strcasecmp(ext, "bmp") == 0)
     {
       BMPHeader PicData = ReadBitmapSpecs(file.name());
-      if (((PicData.width <= kMatrixWidth) && (PicData.height <= kMatrixHeight)) && // Display only in list, when Bitmap not exceeding Display Resolution. Bigger Images are not listed. ...
+      if (((PicData.width <= gfx_getScreenWidth()) && (PicData.height <= gfx_getScreenHeight())) && // Display only in list, when Bitmap not exceeding Display Resolution. Bigger Images are not listed. ...
           ((PicData.depth == 1) || (PicData.depth == 24)))                          // ... and when the bitmap has a known/understood bitdepth.
         {
           temp += "<label for='radio1'><img src='"+ String(file.name())+"' alt='"+ String(file.name())+"' border='3' bordercolor=green> Image "+ PicCount+"</label><input type='radio' value='"+ String(file.name())+"' name='PicSelect'/> <br>";
@@ -943,7 +942,7 @@ if (server.args() > 0) // Parameter wurden ubergeben
     }
     else if ((strcasecmp(ext, "jpg") == 0) || (strcasecmp(ext, "jpeg") == 0))
         if(JpegDec.decodeFsFile(file.name()))                                       // Display only in list, when file could be decoded ...
-            if(JpegDec.width <= kMatrixWidth && JpegDec.height <= kMatrixHeight)    // ... and does not exceed the display size
+            if(JpegDec.width <= gfx_getScreenWidth() && JpegDec.height <= gfx_getScreenHeight())    // ... and does not exceed the display size
             {
                 temp += "<label for='radio1'><img src='"+ String(file.name())+"' alt='"+ String(file.name())+"' border='3' bordercolor=green> Image "+ PicCount+"</label><input type='radio' value='"+ String(file.name())+"' name='PicSelect'/> <br>";
                 temp += String(file.name())+ " "+ String(JpegDec.width) + "*" + String(JpegDec.height) + "px; filesize: "+ formatBytes(file.size()) + "</th></tr><tr><th>";
@@ -989,16 +988,15 @@ void handleNotFound() {
     server.setContentLength(CONTENT_LENGTH_UNKNOWN);
     // HTML Content
     temp += "<!DOCTYPE HTML><html lang='de'><head><meta charset='UTF-8'><meta name= viewport content='width=device-width, initial-scale=1.0,'>";
-    temp += "<style type='text/css'><!-- DIV.container { min-height: 10em; display: table-cell; vertical-align: middle }.button {height:35px; width:90px; font-size:16px}";
-    temp += "body {background-color: powderblue;}</style>";
-    temp += "<head><title>" PROJECT_TITLE " - File not found</title></head>";
+    temp += css_definition;
+    temp += "<title>" PROJECT_TITLE " - File not found</title></head>";
     temp += "<h2> 404 File Not Found</h2><br>";
     temp += "<h4>Debug Information:</h4><br>";
     temp += "<body>";
     temp += "URI: ";
     temp += server.uri();
     temp += "\nMethod: ";
-    temp+= ( server.method() == HTTP_GET ) ? "GET" : "POST";
+    temp += ( server.method() == HTTP_GET ) ? "GET" : "POST";
     temp += "<br>Arguments: ";
     temp += server.args();
     temp += "\n";
@@ -1157,7 +1155,7 @@ void handleWifi()
             temp = saveCredentials() ? // Save AP ConfigCongfig
                     "Daten des AP Modes erfolgreich gespeichert. Reboot notwendig." :
                     "Daten des AP Modes fehlerhaft.";
-          } else temp = (server.arg("APPW") != server.arg("APPWRepeat")) ? 
+          } else temp = (server.arg("APPW") != server.arg("APPWRepeat")) ?
                   "WLAN Passwort nicht gleich. Abgebrochen." :
                   "WLAN Passwort oder AP Name zu kurz. Abgebrochen.";
        // End WifiAP
@@ -1170,9 +1168,9 @@ void handleWifi()
 // HTML Content
   temp += "<!DOCTYPE HTML><html lang='de'><head><meta charset='UTF-8'><meta name= viewport content='width=device-width, initial-scale=1.0,'>";
   server.send ( 200, "text/html", temp );
+  server.sendContent(css_definition);
   temp = "";
-  temp += "<style type='text/css'><!-- DIV.container { min-height: 10em; display: table-cell; vertical-align: middle }.button {height:35px; width:90px; font-size:16px}";
-  temp += "body {background-color: powderblue;}</style><head><title>" PROJECT_TITLE " - WiFi Settings</title></head>";
+  temp += "<title>" PROJECT_TITLE " - WiFi Settings</title></head>";
   server.sendContent(temp);
   temp = "";
   temp += "<h2>WiFi Settings</h2><body><left>";
@@ -1348,7 +1346,6 @@ void handleSlideshow()
 
 void doShowIP(void)
 {   IPAddress myIP = WiFi.softAPIP();
-    
     if((uint32_t)myIP == 0)
     {
         myIP = WiFi.localIP();
@@ -1357,11 +1354,11 @@ void doShowIP(void)
     else
         Serial.print("WiFi.softAPIP() = ");
     Serial.println(myIP);
-        
-    u8g2.clear();
-    u8g2.setFont(u8g2_font_ncenB10_tr);
-    u8g2.drawStr(0,32, myIP.toString().c_str());
-    u8g2.sendBuffer();
+
+    gfx_clearScreen();
+    // gfx_setTextColor(1); // never changed after setup(), so not necessary
+    gfx_drawString(0,32, myIP.toString().c_str());
+    gfx_flushBuffer();
 }
 
 void handleShowIP()
@@ -1369,7 +1366,7 @@ void handleShowIP()
     doShowIP();
     // "suspend" the slideshow for one cycle (no need to check if it is running)
     slideshow_last_switch = millis();
-    
+
     server.sendHeader("Location", "/", true);
     server.sendHeader("Cache-Control", "no-cache, no-store, must-revalidate");
     server.sendHeader("Pragma", "no-cache");

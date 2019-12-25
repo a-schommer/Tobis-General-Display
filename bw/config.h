@@ -6,12 +6,15 @@
 #define BAUDS 115200
 
 // this define defines a complete declaration&definition statement (excluding the final ;) 
-// to construct some u8g2 object specific to the hardware being used:
-// the object name *must* be u8g2 (as lots of source relies on this)
+// to construct some u8g2/ucg object specific to the hardware being used:
+// the object name *must* be u8g2/ucg (as lots of source relies on this)
 // GuoYun & SH1106:
-// #define U5G2_CONSTRUCTION U8G2_SH1106_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, /*reset= */ U8X8_PIN_NONE, /* clock= */ 14, /* data= */ 15)
+#define U8G2_CONSTRUCTION U8G2_SH1106_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, /*reset= */ U8X8_PIN_NONE, /* clock= */ 14, /* data= */ 15)
 // Heltec WifiKit 32 & internal SSD1306:
-#define U5G2_CONSTRUCTION U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, /*reset= */ 16, /* clock= */ 15, /* data= */ 4)
+// #define U8G2_CONSTRUCTION U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, /*reset= */ 16, /* clock= */ 15, /* data= */ 4)
+
+// optional(!): brightness to set
+// #define BRIGHTNESS 100
 
 // name & password of the wifi to create if we can't join any:
 #define FALLBACK_APSTANAME  "ESP_Config"
