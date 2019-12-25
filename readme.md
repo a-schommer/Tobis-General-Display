@@ -14,7 +14,7 @@
 ## Introduction
 
 These sketches enable you to simply show images on small OLEDs (or LCDs) attached to an ESP32 device, controlling the whole via WiFi.
-It is less meant as something to use than as something to get ideas from. 
+They are less meant as something to use than as something to get ideas from. 
 You can upload images to the ESP32, select which of them is displayed and even run a slideshow - all by a simple web frontend.
 The name is still (almost) the same as in the project this is forked from - see [Project Origin](#The-origin-of-this-project).
 
