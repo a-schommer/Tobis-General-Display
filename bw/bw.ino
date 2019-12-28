@@ -978,7 +978,7 @@ void handleNotFound() {
       { // If captive portal redirect instead of displaying the error page.
         return;
       }
-  if (!handleFileRead(server.uri()))
+  if (!handleFileRead(server.urlDecode(server.uri())))
     {
     temp = "";
     // HTML Header
