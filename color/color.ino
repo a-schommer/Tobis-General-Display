@@ -29,7 +29,7 @@ changes/extensions:
 #include <SPIFFS.h>
 #include <DNSServer.h>
 #include <EEPROM.h>
-#include <Ucglib.h>         // https://github.com/olikraus/Ucglib_Arduino
+#include <Ucglib.h>         // https://github.com/olikraus/ucglib
 #include <JPEGDecoder.h>    // https://github.com/Bodmer/JPEGDecoder
 
 // ucg object:
@@ -696,6 +696,37 @@ void drawAnyImageType(const char *filename)
         drawJpeg_SPIFFS(filename);
 }
 
+// encode a complete string "masking" special characters according to RFC3986
+// "problem": i have to work on a buffer that does not (necessarily) allow more characters.
+// "solution": the result is place in a static(!!) buffer large enough for filenames (i.e. MAX_FILENAME_LEN characters plus a null terminator), encoded.
+// note: the RFC does *not* mention the common encoding of space as '+'.
+char *urlencode(const char *org)
+{
+    static char encoded[3*MAX_FILENAME_LEN+1];  // not "3*(MAX_FILENAME_LEN+1)": the rerminating \0 must not be encoded.
+    char *to = encoded;
+    
+    while(*org)
+    {
+        if((*org >='0' && *org <='9') ||
+           (*org >='A' && *org <='Z') ||
+           (*org >='a' && *org <='z') ||
+           (*org =='-') || (*org =='.') ||
+           (*org =='_') || (*org =='~'))
+        {   // no encoding required;
+            *to++ = *org;
+        }
+        else
+        {   static const char hex[] = "0123456789ABCDEF";
+            *to++ = '%';
+            *to++ = hex[(*((uint8_t *)org)) >> 4];
+            *to++ = hex[*org & 0x0f];
+        }
+        ++org;
+    }
+    *to = '\0';
+    return encoded;
+}
+
 void handleRoot() {
 //  Main Page:
  temp = "";
@@ -723,7 +754,7 @@ void handleRoot() {
 // Processing User Request
 if (server.args() > 0) // Parameter wurden ubergeben
 {
-  temp += "<br>Eingaben werden verarbeitet. Bitte warten..<br><br>";;
+  temp += "<br>Processing input. Please wait..<br><br>";
   server.sendContent(temp);
   temp = "";
   if(server.hasArg("PicSelect"))
@@ -775,10 +806,9 @@ if (server.args() > 0) // Parameter wurden ubergeben
     {
         // issue: files with Space in the name can be displayed on the MCU, but not via http
         // this does *not* help:
-        //String fnameurl = String(file.name());
-        //fnameurl.replace(" ", "+");
-        //temp = "<label for='radio1'><img src='"+fnameurl+"' alt='"+ String(file.name())+"' border='3' bordercolor=green> Image "+ PicCount+"</label><input type='radio' value='"+ String(file.name())+"' name='PicSelect'/><br> "+String(file.name())+": " + temp;
-        temp = "<label for='radio1'><img src='"+String(file.name())+"' alt='"+ String(file.name())+"' border='3' bordercolor=green> Image "+ PicCount+"</label><input type='radio' value='"+ String(file.name())+"' name='PicSelect'/><br> "+String(file.name())+": " + temp;
+        String fnameurl = String(urlencode(file.name()));
+        temp = "<label for='radio1'><img src='"+fnameurl+"' alt='"+ String(file.name())+"' border='3' bordercolor=green> Image "+ PicCount+"</label><input type='radio' value='"+ String(file.name())+"' name='PicSelect'/><br> "+String(file.name())+": " + temp;
+        //temp = "<label for='radio1'><img src='"+String(file.name())+"' alt='"+ String(file.name())+"' border='3' bordercolor=green> Image "+ PicCount+"</label><input type='radio' value='"+ String(file.name())+"' name='PicSelect'/><br> "+String(file.name())+": " + temp;
         temp += "; filesize: "+ formatBytes(file.size()) + "</th></tr><tr><th>";
         server.sendContent(temp);
         strncpy(slideshow_filenames[PicCount-1], file.name(), MAX_FILENAME_LEN+1);
@@ -812,7 +842,7 @@ void handleNotFound() {
       { // If captive portal redirect instead of displaying the error page.
         return;
       }
-  if (!handleFileRead(server.uri()))
+  if (!handleFileRead(server.urlDecode(server.uri())))
     {
     temp = "";
     // HTML Header
@@ -1179,14 +1209,14 @@ void handleSlideshow()
 }
 
 void doShowIP(void)
-{   IPAddress myIP = WiFi.softAPIP();
+{   IPAddress myIP = WiFi.localIP();
     if((uint32_t)myIP == 0)
     {
-        myIP = WiFi.localIP();
-        Serial.print("WiFi.localIP() = ");
+        myIP = WiFi.softAPIP();
+        Serial.print("WiFi.softAPIP() = ");
     }
     else
-        Serial.print("WiFi.softAPIP() = ");
+        Serial.print("WiFi.localIP() = ");
     Serial.println(myIP);
 
     gfx_clearScreen();
@@ -1257,7 +1287,7 @@ String toStringIp(IPAddress ip) {
   return res;
 }
 
-String formatBytes(size_t bytes) {            // lesbare Anzeige der Speichergrößen
+String formatBytes(size_t bytes) {            // create human readable versions of memory amounts
    if (bytes < 1024) {
      return String(bytes) + " Bytes";
    } else if (bytes < (1024 * 1024)) {
