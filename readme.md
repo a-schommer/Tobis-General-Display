@@ -22,7 +22,7 @@ The name is still (almost) the same as in the project this is forked from - see 
 
 What do you need to "use" this sketch?
 
-* Some ESP32 driven device
+* Some ESP32 or ESP8266 driven device
 
 * Any device supported by u8g2 or ucglib attachecd to your ESP32
   And, especially if it is "on board": The knowledge how to set it up using u8g2; basically: what driver chip does it have, is it I2C or SPI attached, what pins are used.
@@ -30,9 +30,11 @@ What do you need to "use" this sketch?
 * The Arduino IDE
   (I simply do not know about the ESP IDF)
 
-* The ESP32 Board Manager (https://github.com/espressif/arduino-esp32)
+* If you use an ESP32: The ESP32 Board Manager (https://github.com/espressif/arduino-esp32)
   There are others and i would expect them to work, too - but i simply did not check that. 
   Bottom line: If you get strange compilation issues, give that one a try.
+  
+* If you use an ESP8266: The ESP8266 Board Manager (https://github.com/esp8266/Arduino)
   
 * If you use a black&white only display: the u8g2 library from olikraus, https://github.com/olikraus/u8g2/wiki
   If you use a color display: the ucglib library from olikraus, https://github.com/olikraus/ucglib
@@ -48,17 +50,17 @@ Take a look at config.h - this should contain everything you need to adapt it to
 
 You can already
 * use it as a stand-alone Wifi "AP" or configure it as a station in your WiFi of choice
-* upload files to the SPIFFS filesystem on the ESP32 via WiFi (and delete them)
+* upload files to the SPIFFS filesystem on the ESP via WiFi (and delete them)
 * select an image from a list to be displayed on an OLED
 * use any device supported by the u8g2 or ucglib library
 * display Windows Bitmap Files (of depth 1bit = black&white, non-compressed or 24bit)
 * display JPEG files (non progressive, as Bodmer's JPEGDecoder library "demands", too)
 
 Ideas for the future
-I do not really plan to do all of this; feel free to realize them as forks:
+I do not really plan what to do; feel free to realize this as forks:
 * (fork:) use an SD card instead of SPIFFS.
   In fact i assume this makes little sense. I already see the webserver of an ESP32 becoming unstable with about 20 files being listed... imagine, what might happen with an SD card full of images.
-* making it work on ESP8266
+* support displaying GIF images, maybe even animated.
 
 ## The origin of this project
 This project started as a fork of [Captive_Portal](https://github.com/KuchTo/Captive_Portal) by Tobias Kuch, but just part Captive Portal_ESP32_LED_Matrix.
