@@ -21,12 +21,7 @@ changes/extensions:
 
 #include "config.h"
 #include <string.h>
-#include <WiFi.h>
-#include <WiFiClient.h>
-#include <WebServer.h>
-#include <ESPmDNS.h>
-#define FS_NO_GLOBALS       // required ba JPEGDecoder
-#include <SPIFFS.h>
+#include "esplayer.h"
 #include <DNSServer.h>
 #include <EEPROM.h>
 #include <Ucglib.h>         // https://github.com/olikraus/ucglib
@@ -35,9 +30,6 @@ changes/extensions:
 // ucg object:
 UCG_CONSTRUCTION;
 #include "gfxlayer.h"       // << this unfortunately requires the ucg/u8g2 object to be declared before
-
-#define GPIO_OUT_W1TS_REG (DR_REG_GPIO_BASE + 0x0008)
-#define GPIO_OUT_W1TC_REG (DR_REG_GPIO_BASE + 0x000c)
 
 static const byte WiFiPwdLen = WIFIPWDLEN;
 static const byte APSTANameLen = APSTANAMELEN;
@@ -83,7 +75,7 @@ struct BMPHeader // BitMapStucture
   };
 
 /* hostname for mDNS. Should work at least on windows. Try http://<hostname>.local */
-const char *ESPHostname = "ESP32";
+const char *ESPHostname = FALLBACK_HOSTNAME;
 
 // DNS server
 const byte DNS_PORT = 53;
@@ -93,7 +85,7 @@ DNSServer dnsServer;
 bool SoftAccOK  = false;
 
 // Web server
-WebServer server(80);
+WEBSERVER_CLASS server(80);
 
 /* Soft AP network parameters */
 IPAddress apIP(172, 20, 0, 1);
@@ -102,7 +94,7 @@ IPAddress netMsk(255, 255, 255, 0);
 unsigned long currentMillis = 0;
 unsigned long startMillis;
 
-/** Current WLAN status */
+/** Current WiFi status */
 short status = WL_IDLE_STATUS;
 
 File fsUploadFile;              // a File object to temporarily store the received file
@@ -112,13 +104,9 @@ bool handleFileRead(String path);       // send the right file to the client (if
 void handleFileUpload();                // upload a new file to the SPIFFS
 String temp ="";
 
-static const byte BRIGHTNESS = 100;     // preset brightness
-
 void setup(void)
 {
-  REG_WRITE(GPIO_OUT_W1TS_REG, BIT(GPIO_NUM_16));     // Guru Meditation Error Remediation set
-  delay(1);
-  REG_WRITE(GPIO_OUT_W1TC_REG, BIT(GPIO_NUM_16));     // Guru Meditation Error Remediation clear
+  esp_guru_meditation_error_remediation();
   bool ConnectSuccess = false;
   bool CreateSoftAPSucc  = false;
   bool CInitFSSystem  = false;
@@ -130,14 +118,13 @@ void setup(void)
   Serial.println("Serial Interface initalized at "+String(BAUDS)+" Baud.");
   gfx_init();
 #ifdef SPECIAL_INITIALIZATION
-    SPECIAL_INITIALIZATION();
+  SPECIAL_INITIALIZATION();
 #endif
-
   WiFi.setAutoReconnect (false);
   WiFi.persistent(false);
   WiFi.disconnect();
-  WiFi.setHostname(ESPHostname); // Set the DHCP hostname assigned to ESP station.
-  if (loadCredentials()) // Load WLAN credentials for WiFi Settings
+  esp_wifi_set_hostname(ESPHostname); // Set the DHCP hostname assigned to ESP station.
+  if (loadCredentials()) // Load WiFi credentials for WiFi Settings
   {
      Serial.println(F("Valid Credentials found."));
      MyWiFiConfig.APSTAName[strlen(MyWiFiConfig.APSTAName)+1] = '\0';
@@ -174,8 +161,8 @@ void setup(void)
     }
     else
     {
-      Serial.setDebugOutput(true); //Debug Output for WLAN on Serial Interface.
-      Serial.println(F("Error: Cannot connect to WLAN. Set DEFAULT Configuration."));
+      Serial.setDebugOutput(true); //Debug Output for WiFi on Serial Interface.
+      Serial.println(F("Error: Cannot connect to WiFi. Set DEFAULT Configuration."));
       SetDefaultWiFiConfig();
       CreateSoftAPSucc = CreateWifiSoftAP();
       InitalizeHTTPServer();
@@ -335,7 +322,7 @@ BMPHeader ReadBitmapSpecs(String filename)
 {
   File file;
   BMPHeader BMPData;
-  file =SPIFFS.open(filename, "r");
+  file = SPIFFS.open(filename, "r");
   if (!file)
   {
     file.close();
@@ -354,8 +341,8 @@ BMPHeader ReadBitmapSpecs(String filename)
     BMPData.depth = read16(file); // bits per pixel
     BMPData.format = read32(file);
   }
-file.close();
-return BMPData;
+  file.close();
+  return BMPData;
 }
 
 //#############################################################################
@@ -516,7 +503,7 @@ void handleFileUpload() {
      if (upload.filename.length() > 30) {
       upload.filename = upload.filename.substring(upload.filename.length() - 30, upload.filename.length());  // shorten filename to 30 chars
      }
-      Serial.println("FileUpload Name: " + upload.filename);
+     Serial.println("FileUpload Name: " + upload.filename);
      if (!filename.startsWith("/")) filename = "/" + filename;
       fsUploadFile = SPIFFS.open("/" + server.urlDecode(upload.filename), "w");
      filename = String();
@@ -574,8 +561,11 @@ void handleDisplayFS() {                     // HTML Filesystem
     }
 
   temp += "<table border=2 bgcolor = white width = 400 ><td><h4>Current SPIFFS Status: </h4>";
-  temp += formatBytes(SPIFFS.usedBytes() * 1.05) + " of " + formatBytes(SPIFFS.totalBytes()) + " used. <br>";
-  temp += formatBytes((SPIFFS.totalBytes() - (SPIFFS.usedBytes() * 1.05)))+ " free. <br>";
+  { size_t usedBytes  = esp_get_fs_usedBytes() * 1.05,
+           totalBytes = esp_get_fs_totalBytes();
+  temp += formatBytes(usedBytes) + " of " + formatBytes(totalBytes) + " used. <br>";
+  temp += formatBytes(totalBytes - usedBytes)+ " free. <br>";
+  }
   temp += "</td></table><br>";
   server.sendContent(temp);
   temp = "";
@@ -584,15 +574,14 @@ void handleDisplayFS() {                     // HTML Filesystem
   temp += "<h4>Available Files on SPIFFS:</h4><table border=2 bgcolor = white ></tr></th><td>Filename</td><td>Size</td><td>Action </td></tr></th>";
   server.sendContent(temp);
   temp = "";
-  File root = SPIFFS.open("/");
-  File file = root.openNextFile();
-  while (file)
+  ESP_CLASS_DIR root = esp_openDir("/");
+  File file;
+  while (file = esp_openNextFile(root))
   {
      temp += "<td> <a title=\"Download\" href =\"" + String(file.name()) + "\" download=\"" + String(file.name()) + "\">" + String(file.name()) + "</a> <br></th>";
      temp += "<td>"+ formatBytes(file.size())+ "</td>";
      temp += "<td><a href =filesystem?delete=" + String(file.name()) + "> Delete </a></td>";
      temp += "</tr></th>";
-     file = root.openNextFile();
   }
   temp += "</tr></th>";
   temp += "</td></tr></th><br></th></tr></table></table><br>";
@@ -615,7 +604,7 @@ void handleDisplayFS() {                     // HTML Filesystem
   temp = "";
  }
 
-/** Load WLAN credentials from EEPROM */
+/** Load WiFi credentials from EEPROM */
 
 bool loadCredentials()
 {
@@ -628,12 +617,12 @@ bool loadCredentials()
     RetValue = true;
   } else
   {
-    RetValue = false; // WLAN Settings not found.
+    RetValue = false; // WiFi settings not found.
   }
   return RetValue;
 }
 
-/** Store WLAN credentials to EEPROM */
+/** Store WiFi credentials to EEPROM */
 bool saveCredentials()
 {
 bool RetValue;
@@ -657,7 +646,7 @@ if (RetValue)
      {
       EEPROM.write(i, 0);
      }
-  strncpy( MyWiFiConfig.ConfigValid , MAGIC_VALUE_CONFIGVALID, sizeof(MyWiFiConfig.ConfigValid) );
+  strncpy( MyWiFiConfig.ConfigValid, MAGIC_VALUE_CONFIGVALID, sizeof(MyWiFiConfig.ConfigValid) );
   EEPROM.put(0, MyWiFiConfig);
   EEPROM.commit();
   EEPROM.end();
@@ -694,37 +683,6 @@ void drawAnyImageType(const char *filename)
         drawBitmap_SPIFFS(filename);
     else if(strcasecmp(ext, "jpg") == 0 || strcasecmp(ext, "jpeg") == 0)
         drawJpeg_SPIFFS(filename);
-}
-
-// encode a complete string "masking" special characters according to RFC3986
-// "problem": i have to work on a buffer that does not (necessarily) allow more characters.
-// "solution": the result is place in a static(!!) buffer large enough for filenames (i.e. MAX_FILENAME_LEN characters plus a null terminator), encoded.
-// note: the RFC does *not* mention the common encoding of space as '+'.
-char *urlencode(const char *org)
-{
-    static char encoded[3*MAX_FILENAME_LEN+1];  // not "3*(MAX_FILENAME_LEN+1)": the rerminating \0 must not be encoded.
-    char *to = encoded;
-    
-    while(*org)
-    {
-        if((*org >='0' && *org <='9') ||
-           (*org >='A' && *org <='Z') ||
-           (*org >='a' && *org <='z') ||
-           (*org =='-') || (*org =='.') ||
-           (*org =='_') || (*org =='~'))
-        {   // no encoding required;
-            *to++ = *org;
-        }
-        else
-        {   static const char hex[] = "0123456789ABCDEF";
-            *to++ = '%';
-            *to++ = hex[(*((uint8_t *)org)) >> 4];
-            *to++ = hex[*org & 0x0f];
-        }
-        ++org;
-    }
-    *to = '\0';
-    return encoded;
 }
 
 void handleRoot() {
@@ -771,17 +729,16 @@ if (server.args() > 0) // Parameter wurden ubergeben
   }
 }
   temp += "<table border=2 bgcolor = white ><caption><p><h3>Available Pictures in SPIFFS for "+String(gfx_getScreenWidth())+"*"+String(gfx_getScreenHeight())+" Display</h2></p></caption>";
-  temp += "<form><tr><th><a href='?PicSelect=off&action=0'>Clear Display</a></th></tr><tr><th>";
+  temp += "<form><tr><th><a href='?PicSelect=off&action=0'>Clear Display</a></th></tr>";
   server.sendContent(temp);
-  //List available BMP Files in SPIFFS
-  File root = SPIFFS.open("/");
-  File file = root.openNextFile();
+  //List available graphics files on SPIFFS
+  ESP_CLASS_DIR root = esp_openDir("/");
+  File file;
   PicCount = 1;
-  while (file)
-   {
-    char *ext = strrchr(file.name(), '.');
+  while (file = esp_openNextFile(root))
+  {
     bool valid = false;
-    temp = "";
+    char *ext = strrchr(file.name(), '.');
     if(ext) ++ext;  // skip '.' itself, but not if not found!
     if(strcasecmp(ext, "bmp") == 0)
     {
@@ -804,25 +761,19 @@ if (server.args() > 0) // Parameter wurden ubergeben
     }
     if(valid)
     {
-        // issue: files with Space in the name can be displayed on the MCU, but not via http
-        // this does *not* help:
-        String fnameurl = String(urlencode(file.name()));
-        temp = "<label for='radio1'><img src='"+fnameurl+"' alt='"+ String(file.name())+"' border='3' bordercolor=green> Image "+ PicCount+"</label><input type='radio' value='"+ String(file.name())+"' name='PicSelect'/><br> "+String(file.name())+": " + temp;
-        //temp = "<label for='radio1'><img src='"+String(file.name())+"' alt='"+ String(file.name())+"' border='3' bordercolor=green> Image "+ PicCount+"</label><input type='radio' value='"+ String(file.name())+"' name='PicSelect'/><br> "+String(file.name())+": " + temp;
-        temp += "; filesize: "+ formatBytes(file.size()) + "</th></tr><tr><th>";
+        temp = "<tr><th><label for='radio1'><img src='"+String(file.name())+"' alt='"+ String(file.name())+"' border='3' bordercolor=green> Image "+ PicCount+"</label><input type='radio' value='"+ String(file.name())+"' name='PicSelect'/><br> "+String(file.name())+": " + temp;
+        temp += "; filesize: "+ formatBytes(file.size()) + "</th></tr>";
         server.sendContent(temp);
         strncpy(slideshow_filenames[PicCount-1], file.name(), MAX_FILENAME_LEN+1);
         PicCount ++;
     }
-    file = root.openNextFile();
-   }
+  }
   slideshow_num_images = PicCount - 1;
-  temp = "";
-  temp = "<button type='submit' name='action' value='0' style='height: 50px; width: 280px'>Show Image on Display</button>";
-  temp += "</form>";
+  temp = "<tr><th><button type='submit' name='action' value='0' style='height: 50px; width: 280px'>Show Image on Display</button></th></tr>";
+  temp += "</form></table>";
   temp += "<br><table border=2 bgcolor = white width = 280 cellpadding =5 ><caption><p><h3>Systemlinks:</h2></p></caption>";
   temp += "<tr><td><br>";
-  temp += "<a href='/wifi'>WIFI Settings</a><br><br>";
+  temp += "<a href='/wifi'>WiFi Settings</a><br><br>";
   temp += "<a href='/filesystem'>Filemanager</a><br><br>";
   if(slideshow_num_images > 1)
   {
@@ -874,7 +825,7 @@ void handleNotFound() {
     temp += "</table></form><br><br><table border=2 bgcolor = white width = 500 cellpadding =5 ><caption><p><h2>You may want to browse to:</h2></p></caption>";
     temp += "<tr><th>";
     temp += "<a href='/'>Main Page</a><br>";
-    temp += "<a href='/wifi'>WIFI Settings</a><br>";
+    temp += "<a href='/wifi'>WiFi Settings</a><br>";
     temp += "<a href='/filesystem'>Filemanager</a><br>";
     temp += "</th></tr></table><br><br>";
     temp += html_footer;
@@ -996,8 +947,8 @@ void handleWifi()
         temp = server.arg("APPW");
         i = server.hasArg("PasswordReq") ? temp.length() : 8;
 
-        if (  ( len > 1 ) && (server.arg("APPW") == server.arg("APPWRepeat")) && ( i > 7)          )
-          {
+        if (  ( len > 1 ) && (server.arg("APPW") == server.arg("APPWRepeat")) && ( i > 7) )
+        {
             temp = "";
             Serial.println(F("APMode"));
             MyWiFiConfig.APSTA = true; // Access Point or Sation Mode - true AP Mode
@@ -1016,13 +967,13 @@ void handleWifi()
             for ( i = 0; i < len;i++)  { MyWiFiConfig.WiFiPwd[i] =  temp[i];  }
             MyWiFiConfig.WiFiPwd[len+1] = '\0';
             temp = "";
-            temp = saveCredentials() ? // Save AP ConfigCongfig
-                    "Daten des AP Modes erfolgreich gespeichert. Reboot notwendig." :
-                    "Daten des AP Modes fehlerhaft.";
-          } else temp = (server.arg("APPW") != server.arg("APPWRepeat")) ?
-                  "WLAN Passwort nicht gleich. Abgebrochen." :
-                  "WLAN Passwort oder AP Name zu kurz. Abgebrochen.";
-       // End WifiAP
+            temp = saveCredentials() ? // Save AP Config
+                    "WiFi settings saved successfully. Reboot required." :
+                    "corrupted WiFi settings not saved.";
+        } else temp = (server.arg("APPW") != server.arg("APPWRepeat")) ?
+                  "WiFi password(s) differ. Aborted." :
+                  "WiFi password too short. Aborted.";
+       // End Wifi
        }
   // HTML Header
   server.sendHeader("Cache-Control", "no-cache, no-store, must-revalidate");
@@ -1078,7 +1029,7 @@ void handleWifi()
   } else {
     temp += "</tr></th>";
     temp += "<td>1 </td>";
-    temp += "<td>No WLAN found</td>";
+    temp += "<td>No WiFi found</td>";
     temp += "<td> --- </td>";
     temp += "<td> --- </td>";
   }
@@ -1088,12 +1039,12 @@ if (n > 0) {
     temp += "<option value='" + WiFi.SSID(i) +"'>" + WiFi.SSID(i) +"</option>";
     }
   } else {
-    temp += "<option value='No_WiFi_Network'>No WiFiNetwork found !/option>";
+    temp += "<option value='No_WiFi_Network'>No WiFi network found !</option>";
   }
   server.sendContent(temp);
   temp = "";
   temp += "</select></td></tr></th></tr></th><td>WiFi Password: </td><td>";
-  temp += "<input type='text' name='STAWLanPW' maxlength='40' size='40'>";
+  temp += "<input type='password' name='STAWLanPW' maxlength='40' size='40'>";
   temp += "</td></tr></th><br></th></tr></table></table><table border=2 bgcolor = white width = 500 ><tr><th><br>";
   server.sendContent(temp);
   temp = "";
@@ -1116,20 +1067,19 @@ if (n > 0) {
     }
   server.sendContent(temp);
   temp = "";
+  temp += "</tr></th><td>WiFi Password: </td><td>";
   if (MyWiFiConfig.APSTA == true)
     {
-      temp += "</tr></th><td>WiFi Password: </td><td>";
       temp += "<input type='password' name='APPW' maxlength='"+String(WiFiPwdLen-1)+"' size='30' value='" + String(MyWiFiConfig.WiFiPwd) + "'> </td>";
       temp += "</tr></th><td>Repeat WiFi Password: </td>";
       temp += "<td><input type='password' name='APPWRepeat' maxlength='"+String(WiFiPwdLen-1)+"' size='30' value='" + String(MyWiFiConfig.WiFiPwd) + "'> </td>";
     } else
     {
-      temp += "</tr></th><td>WiFi Password: </td><td>";
       temp += "<input type='password' name='APPW' maxlength='"+String(WiFiPwdLen-1)+"' size='30'> </td>";
       temp += "</tr></th><td>Repeat WiFi Password: </td>";
       temp += "<td><input type='password' name='APPWRepeat' maxlength='"+String(WiFiPwdLen-1)+"' size='30'> </td>";
     }
-      temp += "</table>";
+  temp += "</table>";
   server.sendContent(temp);
   temp = "";
   if (MyWiFiConfig.PwDReq)
@@ -1254,26 +1204,11 @@ String GetEncryptionType(byte thisType) {
   String Output = "";
    // read the encryption type and print out the name:
    switch (thisType) {
-     case 5:
-       Output = "WEP";
-       return Output;
-       break;
-     case 2:
-       Output = "WPA";
-       return Output;
-       break;
-     case 4:
-       Output = "WPA2";
-       return Output;
-       break;
-     case 7:
-       Output = "None";
-       return Output;
-       break;
-     case 8:
-       Output = "Auto";
-       return Output;
-      break;
+     case 2: return String("WPA");  break;
+     case 4: return String("WPA2"); break;
+     case 5: return String("WEP");  break;
+     case 7: return String("None"); break;
+     case 8: return String("Auto"); break;
    }
 }
 

@@ -15,7 +15,13 @@
 #define FALLBACK_APSTANAME  "ESP_Config"
 #define FALLBACK_WIFIPWD    "EspWiFiDisplay"
 // hostname (for mdns)
+#ifdef ESP32
 #define FALLBACK_HOSTNAME   "ESP32"
+#elif defined(ESP8266)
+#define FALLBACK_HOSTNAME   "ESP8266"
+#else
+#define FALLBACK_HOSTNAME   "ESP"
+#endif
 
 // max. length of wifi passwords (to save)
 #define WIFIPWDLEN  25
