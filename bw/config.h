@@ -12,6 +12,8 @@
 #define U8G2_CONSTRUCTION U8G2_SH1106_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, /*reset= */ U8X8_PIN_NONE, /* clock= */ 14, /* data= */ 15)
 // Heltec WifiKit 32 & internal SSD1306:
 // #define U8G2_CONSTRUCTION U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, /*reset= */ 16, /* clock= */ 15, /* data= */ 4)
+// some WeMos (?) board with onboard-SSD1306 & battery holder  (18650 size)
+// #define U8G2_CONSTRUCTION U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2(/* u8g2_cb_t *rotation = */ U8G2_R0, /* reset = */ U8X8_PIN_NONE, /* SCL= */ 4, /* SDA= */ 5 )
 
 // optional(!): brightness to set
 // #define BRIGHTNESS 100
@@ -20,7 +22,13 @@
 #define FALLBACK_APSTANAME  "ESP_Config"
 #define FALLBACK_WIFIPWD    "EspWiFiDisplay"
 // hostname (for mdns)
+#ifdef ESP32
 #define FALLBACK_HOSTNAME   "ESP32"
+#elif defined(ESP8266)
+#define FALLBACK_HOSTNAME   "ESP8266"
+#else
+#define FALLBACK_HOSTNAME   "ESP"
+#endif
 
 // max. length of wifi passwords (to save)
 #define WIFIPWDLEN  25
