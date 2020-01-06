@@ -1,3 +1,12 @@
+/*
+
+Tobis General Display
+
+config.h - "user" configuration
+by Arnold Schommer
+
+*/
+
 #ifndef _CONFIG_H
 #define _CONFIG_H
 
@@ -22,13 +31,8 @@
 #define FALLBACK_APSTANAME  "ESP_Config"
 #define FALLBACK_WIFIPWD    "EspWiFiDisplay"
 // hostname (for mdns)
-#ifdef ESP32
-#define FALLBACK_HOSTNAME   "ESP32"
-#elif defined(ESP8266)
-#define FALLBACK_HOSTNAME   "ESP8266"
-#else
-#define FALLBACK_HOSTNAME   "ESP"
-#endif
+// optional: if not set here, it will be "ESP32" or "ESP8266" depending on the DEFINEs to the compiler
+// #define FALLBACK_HOSTNAME   "ESP_Tobi"
 
 // max. length of wifi passwords (to save)
 #define WIFIPWDLEN  25

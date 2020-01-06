@@ -3,6 +3,7 @@
 Tobis General Display
 
 esplayer.h
+by Arnold Schommer
 
 "interfaces" which differ between esp8266 and esp32 - mostly defined as inline functions or macros.
 contains several #include's !

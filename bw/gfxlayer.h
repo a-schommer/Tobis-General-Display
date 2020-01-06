@@ -3,6 +3,7 @@
 Tobis General Display
 
 gfxlayer.h
+by Arnold Schommer
 
 graphics relevant "interfaces" - mostly defined as inline functions or macros.
 

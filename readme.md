@@ -55,6 +55,7 @@ You can already
 * use any device supported by the u8g2 or ucglib library
 * display Windows Bitmap Files (of depth 1bit = black&white, non-compressed or 24bit)
 * display JPEG files (non progressive, as Bodmer's JPEGDecoder library "demands", too)
+* save some permanent settings (whether to show ip address, SSID, WiFi password on the display on startup; whether to autostart a slideshow)
 
 Ideas for the future
 I do not really plan what to do; feel free to realize this as forks:

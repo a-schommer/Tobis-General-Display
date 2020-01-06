@@ -1,13 +1,20 @@
-/*====================================================================================
-  This sketch contains support functions to render the Jpeg images.
+/*
 
-  Created by Bodmer 15th Jan 2017
+Tobis General Display
+
+JPEG_functions.ino
+
+This file contains support functions to render the Jpeg images.
+
+Created by Bodmer 15th Jan 2017
   
-  adapted by Arnold Schommer 2019
+adapted by Arnold Schommer 2019
 
-  ==================================================================================*/
+ucg variant
 
-#include <Ucglib.h>         // https://github.com/olikraus/Ucglib_Arduino
+==================================================================================*/
+
+#include <Ucglib.h>         // https://github.com/olikraus/ucglib
 #include "gfxlayer.h"
 #include <JPEGDecoder.h>    // https://github.com/Bodmer/JPEGDecoder
 

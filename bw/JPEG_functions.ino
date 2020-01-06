@@ -1,11 +1,18 @@
-/*====================================================================================
-  This sketch contains support functions to render the Jpeg images.
+/*
 
-  Created by Bodmer 15th Jan 2017
+Tobis General Display
+
+JPEG_functions.ino
+
+This file contains support functions to render the Jpeg images.
+
+Created by Bodmer 15th Jan 2017
   
-  adapted by Arnold Schommer 2019
+adapted by Arnold Schommer 2019
 
-  ==================================================================================*/
+u8g2 variant
+
+==================================================================================*/
 
 #include <U8g2lib.h>        // https://github.com/olikraus/u8g2
 #include "gfxlayer.h"
@@ -83,6 +90,8 @@ void jpegRender(int xpos, int ypos) {
   // record the current time so we can measure how long it takes to draw an image
   uint32_t drawTime = millis();
 
+  gfx_clearScreen();    // clear previous image
+
   // save the coordinate of the right and bottom edges to assist image cropping
   // to the screen size
   max_x += xpos;
@@ -115,6 +124,7 @@ void jpegRender(int xpos, int ypos) {
     else if ( ( mcu_y + win_h) >= gfx_getScreenHeight()) 
         JpegDec.abort();
   }
+  gfx_flushBuffer();
 
   // calculate how long it took to draw the image
   drawTime = millis() - drawTime; // Calculate the time it took

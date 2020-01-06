@@ -1,11 +1,12 @@
 /*
 
 Tobis General Display
+by Arnold Schommer, Tobias Kuch
+
+bw.ino - main sketch, u8g2 variant
 
 based on: the sketch on the German website https://www.az-delivery.de/blogs/azdelivery-blog-fur-arduino-und-raspberry-pi/captive-portal-blog-teil-4-bmp-dateienanzeige-auf-8x8-matrix-display
 by Tobias Kuch
-
-u8g2 variant
 
 changes/extensions:
 
@@ -17,14 +18,17 @@ changes/extensions:
 - option (menu item) to display the IP address - instead of an image
 - (limited) JPEG capability using the JPEGDecoder lib from Bodmer
 - taking some of the configuration out of this main file to the newly created config.h
+- compilable for ESP32 *and* ESP8266
+- display of IP adddress, SSID & WiFi password can be configured in the EEPROM-data
 
 */
 
+#include "pre-config.h"
 #include "config.h"
 #include <string.h>
 #include "esplayer.h"
 #include <DNSServer.h>
-#include <EEPROM.h>
+#include "settings.h"
 #include <U8g2lib.h>        // https://github.com/olikraus/u8g2
 #ifdef U8X8_HAVE_HW_SPI
 #include <SPI.h>
@@ -37,9 +41,6 @@ changes/extensions:
 // u8g2 object:
 U8G2_CONSTRUCTION;
 #include "gfxlayer.h"       // << this unfortunately requires the ucg/u8g2 object to be declared before
-
-static const byte WiFiPwdLen = WIFIPWDLEN;
-static const byte APSTANameLen = APSTANAMELEN;
 
 bool slideshow_is_running = false;
 unsigned long slideshow_last_switch = 0;
@@ -57,23 +58,12 @@ static const char *html_footer =
        "<footer><p>Programmed and designed by: Tobias Kuch,<br>(u8g2/ucglib output:) Arnold Schommer</p>"
        "<p>source hosted at <a href='https://github.com/a-schommer/Tobis-General-Display'>GitHub</a>.</p></footer>";
 
-struct WiFiEEPromData
-  {
-    bool APSTA = true; // Access Point or Sation Mode - true AP Mode
-    bool PwDReq = false; // PasswordRequired
-    bool CapPortal = true ; //CaptivePortal on in AP Mode
-    char APSTAName[APSTANameLen]; // STATION /AP Point Name TO cONNECT, if definded
-    char WiFiPwd[WiFiPwdLen]; // WiFiPAssword, if definded
-    char ConfigValid[3]; //If Config is Vaild, Tag "TK" is required"
-  };
-#define MAGIC_VALUE_CONFIGVALID "TK"    // must be less than three bytes!!!
-
 struct BMPHeader // BitMapStucture
   {
-    uint32_t fileSize;  //
-    uint32_t creatorBytes; //
-    uint32_t imageOffset; // Start of image data  "Image Offset:
-    uint32_t headerSize;     //
+    uint32_t fileSize;
+    uint32_t creatorBytes;
+    uint32_t imageOffset;   // start of image data, "image offset"
+    uint32_t headerSize;
     uint32_t width;
     uint32_t height;
     uint16_t planes;
@@ -105,7 +95,6 @@ unsigned long startMillis;
 short status = WL_IDLE_STATUS;
 
 File fsUploadFile;              // a File object to temporarily store the received file
-WiFiEEPromData MyWiFiConfig;
 String getContentType(String filename); // convert the file extension to the MIME type
 bool handleFileRead(String path);       // send the right file to the client (if it exists)
 void handleFileUpload();                // upload a new file to the SPIFFS
@@ -122,7 +111,7 @@ void setup(void)
   Serial.begin(BAUDS);
   while (!Serial) // wait for serial port to connect. Needed for native USB
     delay(1);
-  Serial.println("Serial Interface initalized at "+String(BAUDS)+" Baud.");
+  Serial.println("serial interface initialized at "+String(BAUDS)+" baud");
   gfx_init();
 #ifdef SPECIAL_INITIALIZATION
   SPECIAL_INITIALIZATION();
@@ -131,12 +120,12 @@ void setup(void)
   WiFi.persistent(false);
   WiFi.disconnect();
   esp_wifi_set_hostname(ESPHostname); // Set the DHCP hostname assigned to ESP station.
-  if (loadCredentials()) // Load WiFi credentials for WiFi Settings
+  if (loadSettings())   // Load settings, mainly WiFi
   {
-     Serial.println(F("Valid Credentials found."));
-     MyWiFiConfig.APSTAName[strlen(MyWiFiConfig.APSTAName)+1] = '\0';
-     MyWiFiConfig.WiFiPwd[strlen(MyWiFiConfig.WiFiPwd)+1] = '\0';
-     if (MyWiFiConfig.APSTA == true)  // AP Mode
+     Serial.println(F("Valid settings data found."));
+     MySettings.WiFiAPSTAName[strlen(MySettings.WiFiAPSTAName)+1] = '\0';
+     MySettings.WiFiPwd[strlen(MySettings.WiFiPwd)+1] = '\0';
+     if (SETTINGS_IS_AP_MODE)
       {
         Serial.println(F("Access Point Mode selected."));
         CreateSoftAPSucc = CreateWifiSoftAP();
@@ -147,66 +136,70 @@ void setup(void)
         if ( len == 3 ) { ConnectSuccess = true; } else { ConnectSuccess = false; }
       }
   } else
-  { //Set default Config - Create AP
-     Serial.println(F("NO Valid Credentials found."));
-     SetDefaultWiFiConfig ();
+  { //set default settings - create AP
+     Serial.println(F("NO valid settings data found."));
+     SetDefaultSettings();
      CreateSoftAPSucc = CreateWifiSoftAP();
-     saveCredentials();
+     saveSettings();
      // Blink
      delay(500);
   }
-  // Initalize Filesystem
-  CInitFSSystem = InitalizeFileSystem();
-  if (!(CInitFSSystem)) {Serial.println(F("File System not initalized ! ")); }
+  // initialize filesystem
+  CInitFSSystem = InitializeFileSystem();
+  if (!(CInitFSSystem)) Serial.println(F("file system not initialized !"));
   if (ConnectSuccess || CreateSoftAPSucc)
     {
       //Serial.print (F("IP Address: "));
       //if (CreateSoftAPSucc) { Serial.println(WiFi.softAPIP());}
       //if (ConnectSuccess) { Serial.println(WiFi.localIP());}
-      InitalizeHTTPServer();
-      doShowIP();
     }
     else
     {
       Serial.setDebugOutput(true); //Debug Output for WiFi on Serial Interface.
-      Serial.println(F("Error: Cannot connect to WiFi. Set DEFAULT Configuration."));
-      SetDefaultWiFiConfig();
+      Serial.println(F("Error: Cannot connect to WiFi. Set DEFAULT WiFi configuration."));
+      SetDefaultWiFiSettings();
       CreateSoftAPSucc = CreateWifiSoftAP();
-      InitalizeHTTPServer();
-      SetDefaultWiFiConfig();
-      saveCredentials();
-      gfx_clearScreen();
-      gfx_flushBuffer();
+      // saveSettings();
+    }
+    InitializeHTTPServer();
+
+    doShowWifi(false);
+
+    if(SETTINGS_IS_SLIDESHOW_AUTORUN)
+    {
+        slideshow_is_running = true;
+        scan_images_for_slideshow();
+        slideshow_last_switch = millis();
     }
 }
 
-void InitalizeHTTPServer()
+void InitializeHTTPServer()
  {
   bool initok = false;
-  /* Setup web pages: root, wifi config pages, SO captive portal detectors and not found. */
+  /* Setup web pages: root, wifi settings pages, SO captive portal detectors and not found. */
   server.on("/", handleRoot);
-  server.on("/wifi", handleWifi);
+  server.on("/settings", handleSettings);
   server.on("/filesystem", HTTP_GET, handleDisplayFS);
   server.on("/slideshow", HTTP_GET, handleSlideshow);
-  server.on("/showip", HTTP_GET, handleShowIP);
+  server.on("/showwifi", HTTP_GET, handleShowWifi);
   server.on("/upload", HTTP_POST, []() {
   server.send(200, "text/plain", "");
   }, handleFileUpload);
-  // if (MyWiFiConfig.CapPortal) { server.on("/generate_204", handleRoot); } //Android captive portal. Maybe not needed. Might be handled by notFound handler.
-  // if (MyWiFiConfig.CapPortal) { server.on("/favicon.ico", handleRoot); }   //Another Android captive portal. Maybe not needed. Might be handled by notFound handler. Checked on Sony Handy
-  // if (MyWiFiConfig.CapPortal) { server.on("/fwlink", handleRoot); }  //Microsoft captive portal. Maybe not needed. Might be handled by notFound handler.
-  server.on("/generate_204", handleRoot);  //Android captive portal. Maybe not needed. Might be handled by notFound handler.
-  server.on("/favicon.ico", handleRoot);    //Another Android captive portal. Maybe not needed. Might be handled by notFound handler. Checked on Sony Handy
-  server.on("/fwlink", handleRoot);   //Microsoft captive portal. Maybe not needed. Might be handled by notFound handler.
+  if(SETTINGS_IS_CAPTIVE_PORTAL)
+  {
+    server.on("/generate_204", handleRoot);     //Android captive portal. Maybe not needed. Might be handled by notFound handler.
+    server.on("/favicon.ico", handleRoot);      //Another Android captive portal. Maybe not needed. Might be handled by notFound handler. Checked on Sony Handy
+    server.on("/fwlink", handleRoot);           //Microsoft captive portal. Maybe not needed. Might be handled by notFound handler.
+  }
   server.onNotFound ( handleNotFound );
   server.begin(); // Web server start
  }
 
-boolean InitalizeFileSystem() {
+boolean InitializeFileSystem() {
   bool initok = false;
   initok = SPIFFS.begin();
   delay(200);
-  if (!(initok))
+  if (! initok)
   {
     Serial.println(F("Format SPIFFS"));
     SPIFFS.format();
@@ -218,43 +211,44 @@ boolean InitalizeFileSystem() {
 boolean CreateWifiSoftAP()
 {
   WiFi.disconnect();
-  Serial.print(F("Initalize SoftAP "));
-  if (MyWiFiConfig.PwDReq)
+  Serial.print(F("Initialize SoftAP "));
+  if (SETTINGS_IS_WIFI_PASSWORD_REQUIRED)
     {
-      SoftAccOK  =  WiFi.softAP(MyWiFiConfig.APSTAName, MyWiFiConfig.WiFiPwd); // Passwortlänge mindestens 8 Zeichen !
+      SoftAccOK = WiFi.softAP(MySettings.WiFiAPSTAName, MySettings.WiFiPwd); // password length at least 8 characters!
     } else
     {
-      SoftAccOK  =  WiFi.softAP(MyWiFiConfig.APSTAName); // Access Point WITHOUT Password
+      SoftAccOK = WiFi.softAP(MySettings.WiFiAPSTAName); // access point WITHOUT password
       // Overload Function:; WiFi.softAP(ssid, password, channel, hidden)
     }
   delay(2000); // Without delay I've seen the IP address blank
   WiFi.softAPConfig(apIP, apIP, netMsk);
   if (SoftAccOK)
   {
-  /* Setup the DNS server redirecting all the domains to the apIP */
-  dnsServer.setErrorReplyCode(DNSReplyCode::NoError);
-  dnsServer.start(DNS_PORT, "*", apIP);
-  Serial.println(F("successful."));
+    /* Setup the DNS server redirecting all the domains to the apIP */
+    dnsServer.setErrorReplyCode(DNSReplyCode::NoError);
+    dnsServer.start(DNS_PORT, "*", apIP);
+    Serial.println(F("successful."));
   } else
   {
-  Serial.println(F("Soft AP Error."));
-  Serial.println(MyWiFiConfig.APSTAName);
-  Serial.println(MyWiFiConfig.WiFiPwd);
+    Serial.println(F("Soft AP Error."));
+    Serial.println(MySettings.WiFiAPSTAName);
+    Serial.println(MySettings.WiFiPwd);
   }
+  doShowWifi(false);
   return SoftAccOK;
 }
 
 byte ConnectWifiAP()
 {
-  Serial.println(F("Initalizing Wifi Client."));
+  Serial.println(F("initializing Wifi client"));
   byte connRes = 0;
   byte i = 0;
   WiFi.disconnect();
   WiFi.softAPdisconnect(true); // Function will set currently configured SSID and password of the soft-AP to null values. The parameter  is optional. If set to true it will switch the soft-AP mode off.
   delay(500);
-  WiFi.begin(MyWiFiConfig.APSTAName, MyWiFiConfig.WiFiPwd);
+  WiFi.begin(MySettings.WiFiAPSTAName, MySettings.WiFiPwd);
   connRes  = WiFi.waitForConnectResult();
-  while (( connRes == 0 ) && (i != 10))  //if connRes == 0  "IDLE_STATUS - change Statius"
+  while (( connRes == 0 ) && (i < 10))  //if connRes == 0  "IDLE_STATUS - change Statius"
     {
       connRes  = WiFi.waitForConnectResult();
       delay(2000);
@@ -262,7 +256,7 @@ byte ConnectWifiAP()
       Serial.print(F("."));
       // statement(s)
     }
-  while (( connRes == 1 ) && (i != 10))  //if connRes == 1  NO_SSID_AVAILin - SSID cannot be reached
+  while (( connRes == 1 ) && (i < 10))  //if connRes == 1  NO_SSID_AVAILin - SSID cannot be reached
     {
       connRes  = WiFi.waitForConnectResult();
       delay(2000);
@@ -278,9 +272,9 @@ byte ConnectWifiAP()
          Serial.println(F("Error: MDNS"));
      } else { MDNS.addService("http", "tcp", 80); }
   }
-  while (( connRes == 4 ) && (i != 10))  //if connRes == 4  Bad Password. Sometimes happens this with corrct PWD
+  while (( connRes == 4 ) && (i < 10))  //if connRes == 4  Bad Password. Sometimes happens this with corrct PWD
     {
-      WiFi.begin(MyWiFiConfig.APSTAName, MyWiFiConfig.WiFiPwd);
+      WiFi.begin(MySettings.WiFiAPSTAName, MySettings.WiFiPwd);
       connRes = WiFi.waitForConnectResult();
       delay(2000);
       i++;
@@ -289,8 +283,8 @@ byte ConnectWifiAP()
   if (connRes == 4 )
   {
     Serial.println(F("STA Pwd Err"));
-    Serial.println(MyWiFiConfig.APSTAName);
-    Serial.println(MyWiFiConfig.WiFiPwd);
+    Serial.println(MySettings.WiFiAPSTAName);
+    Serial.println(MySettings.WiFiPwd);
     WiFi.disconnect();
   }
 Serial.println(F(""));
@@ -412,6 +406,7 @@ bool prepare_framebuffer(const uint16_t width, const uint16_t height)
     return true;
 }
 
+//#############################################################################
 // draw a tile already loaded to a small memory buffer - called/required by jpegRender()
 // converting from RGB565 to grayscale, 0..FS_SCALE_MAX (int8_t)
 // CAUTION: will crash, if prepare_framebuffer() is not yet called (successfully) !
@@ -672,6 +667,27 @@ void drawBitmap_SPIFFS(const char *filename)
   }
 }
 
+// mask special characters, returning a pseudo-copy - in fact, to a static buffer...
+char *urlencode(char const *from) {
+    static char buffer[2*MAX_FILENAME_LEN+1];   // not safely enough, but ...
+    char *to;
+
+    for(to=buffer; *from; ++from) {
+        char org = *from;
+        if(((org >= 'a') && (org <='z')) ||
+           ((org >= 'A') && (org <='Z')) ||
+           ((org >= '0') && (org <='9')) ||
+           (org == '.') || (org == '_') || (org == '-') || (org == '~')) *to++ = org;
+        else { static char hexdigits[] = "0123456789ABCDEF";
+            *to++ = '%';
+            *to++ = hexdigits[(org >> 4) & 0x0f];
+            *to++ = hexdigits[org & 0x0f];
+        }
+    }
+    *to = 0;
+    return buffer;
+}
+
 void handleFileUpload() {
    if (server.uri() != "/upload") return;
    HTTPUpload& upload = server.upload();
@@ -757,19 +773,19 @@ void handleDisplayFS() {                     // HTML Filesystem
   {
      temp += "<td> <a title=\"Download\" href =\"" + String(file.name()) + "\" download=\"" + String(file.name()) + "\">" + String(file.name()) + "</a> <br></th>";
      temp += "<td>"+ formatBytes(file.size())+ "</td>";
-     temp += "<td><a href =filesystem?delete=" + String(file.name()) + "> Delete </a></td>";
+     temp += "<td><a href=filesystem?delete=" + String(urlencode(file.name())) + "> Delete </a></td>";
      temp += "</tr></th>";
   }
   temp += "</tr></th>";
   temp += "</td></tr></th><br></th></tr></table></table><br>";
-  temp += "<table border=2 bgcolor = white width = 400 ><td><h4>Upload</h4>";
+  temp += "<table border=2 bgcolor=white width=400><td><h4>Upload</h4>";
   temp += "<label> Choose File: </label>";
   temp += "<form method='POST' action='/upload' enctype='multipart/form-data' style='height:35px;'><input type='file' name='upload' style='height:35px; font-size:13px;' required>\r\n<input type='submit' value='Upload' class='button'></form>";
   temp += " </table><br>";
   server.sendContent(temp);
   temp = "";
   temp += "<td><a href =filesystem?format=on> Format SPIFFS Filesystem. (Takes up to 30 Seconds) </a></td>";
-  temp += "<table border=2 bgcolor = white width = 500 cellpadding =5 ><caption><p><h3>Systemlinks:</h2></p></caption><tr><th><br>";
+  temp += "<table border=2 bgcolor=white width=500 cellpadding=5><caption><p><h3>Systemlinks:</h2></p></caption><tr><th><br>";
   temp += " <a href='/'>Main Page</a><br><br></th></tr></table><br><br>";
   server.sendContent(temp);
   temp = "";
@@ -780,75 +796,6 @@ void handleDisplayFS() {                     // HTML Filesystem
   server.client().stop(); // Stop is needed because we sent no content length
   temp = "";
  }
-
-/** Load WiFi credentials from EEPROM */
-
-bool loadCredentials()
-{
- bool RetValue;
- EEPROM.begin(512);
- EEPROM.get(0, MyWiFiConfig);
- EEPROM.end();
- if (String(MyWiFiConfig.ConfigValid) == String(MAGIC_VALUE_CONFIGVALID))
-  {
-    RetValue = true;
-  } else
-  {
-    RetValue = false; // WiFi settings not found.
-  }
-  return RetValue;
-}
-
-/** Store WiFi credentials to EEPROM */
-bool saveCredentials()
-{
-bool RetValue;
-// Check logical Errors
-RetValue = true;
-if  (MyWiFiConfig.APSTA == true ) //AP Mode
-  {
-   if (MyWiFiConfig.PwDReq && (sizeof(String(MyWiFiConfig.WiFiPwd)) < 8))
-    {
-      RetValue = false;  // Invalid Config
-    }
-   if (sizeof(String(MyWiFiConfig.APSTAName)) < 1)
-    {
-      RetValue = false;  // Invalid Config
-    }
-  }
-if (RetValue)
-  {
-  EEPROM.begin(512);
-  for (int i = 0 ; i < sizeof(MyWiFiConfig) ; i++)
-     {
-      EEPROM.write(i, 0);
-     }
-  strncpy( MyWiFiConfig.ConfigValid, MAGIC_VALUE_CONFIGVALID, sizeof(MyWiFiConfig.ConfigValid) );
-  EEPROM.put(0, MyWiFiConfig);
-  EEPROM.commit();
-  EEPROM.end();
-  }
-  return RetValue;
-}
-
-
-void SetDefaultWiFiConfig()
-{
-   byte len;
-   MyWiFiConfig.APSTA = true;
-   MyWiFiConfig.PwDReq = true;  // default PW required
-   MyWiFiConfig.CapPortal = true;
-   strncpy( MyWiFiConfig.APSTAName, FALLBACK_APSTANAME, sizeof(MyWiFiConfig.APSTAName) );
-   len = strlen(MyWiFiConfig.APSTAName);
-   MyWiFiConfig.APSTAName[len+1] = '\0';
-   strncpy( MyWiFiConfig.WiFiPwd, FALLBACK_WIFIPWD, sizeof(MyWiFiConfig.WiFiPwd) );
-   len = strlen(MyWiFiConfig.WiFiPwd);
-   MyWiFiConfig.WiFiPwd[len+1] = '\0';
-   strncpy( MyWiFiConfig.ConfigValid, MAGIC_VALUE_CONFIGVALID, sizeof(MyWiFiConfig.ConfigValid) );
-   len = strlen(MyWiFiConfig.ConfigValid);
-   MyWiFiConfig.ConfigValid[len+1] = '\0';
-   Serial.println(F("Reset WiFi Credentials."));
-}
 
 void drawAnyImageType(const char *filename)
 {
@@ -906,7 +853,7 @@ if (server.args() > 0) // Parameter wurden ubergeben
   }
 }
   temp += "<table border=2 bgcolor = white ><caption><p><h3>Available Pictures in SPIFFS for "+String(gfx_getScreenWidth())+"*"+String(gfx_getScreenHeight())+" Display</h2></p></caption>";
-  temp += "<form><tr><th><input type='radio' name='PicSelect' value = 'off' checked> Clear Display<br></th></tr>";
+  temp += "<form><tr><th><a href='?PicSelect=off&action=0'>Clear Display</a></th></tr>";
   server.sendContent(temp);
   //List available graphics files on SPIFFS
   ESP_CLASS_DIR root = esp_openDir("/");
@@ -941,8 +888,11 @@ if (server.args() > 0) // Parameter wurden ubergeben
         temp = "<tr><th><label for='radio1'><img src='"+String(file.name())+"' alt='"+ String(file.name())+"' border='3' bordercolor=green> Image "+ PicCount+"</label><input type='radio' value='"+ String(file.name())+"' name='PicSelect'/><br> "+String(file.name())+": " + temp;
         temp += "; filesize: "+ formatBytes(file.size()) + "</th></tr>";
         server.sendContent(temp);
-        strncpy(slideshow_filenames[PicCount-1], file.name(), MAX_FILENAME_LEN+1);
-        PicCount ++;
+        if(PicCount <= SLIDESHOW_MAX_IMAGES)
+        {
+            strncpy(slideshow_filenames[PicCount-1], file.name(), MAX_FILENAME_LEN+1);
+        }
+        PicCount++;
     }
   }
   slideshow_num_images = PicCount - 1;
@@ -950,19 +900,51 @@ if (server.args() > 0) // Parameter wurden ubergeben
   temp += "</form></table>";
   temp += "<br><table border=2 bgcolor = white width = 280 cellpadding =5 ><caption><p><h3>Systemlinks:</h2></p></caption>";
   temp += "<tr><td><br>";
-  temp += "<a href='/wifi'>WiFi Settings</a><br><br>";
+  temp += "<a href='/settings'>Settings</a><br><br>";
   temp += "<a href='/filesystem'>Filemanager</a><br><br>";
   if(slideshow_num_images > 1)
   {
       temp += slideshow_is_running ? "<a href='/slideshow?off=1'>stop slideshow</a><br><br>" : "<a href='/slideshow?on=1'>start slideshow</a><br><br>";
   }
-  temp += "<a href='/showip'>show ip (on display)</a><br><br>";
+  temp += "<a href='/showwifi'>show WiFi info (like on startup; on the display)</a><br><br>";
   temp += "</td></tr></table><br><br>";
   temp += html_footer;
   temp += "</body></html>";
   server.sendContent(temp);
   temp = "";
   server.client().stop(); // Stop is needed because we sent no content length
+}
+
+// create/update the "index" of images that may be displayed - to be used in the slideshow
+// in fact, this is a stripped down version of handleRoot()
+// updates the global vars slideshow_filenames[] and slideshow_num_images
+void scan_images_for_slideshow() {
+    File file;
+    ESP_CLASS_DIR root = esp_openDir("/");
+
+    slideshow_num_images = 0;
+    while (file = esp_openNextFile(root))
+    {
+        bool valid = false;
+        char *ext = strrchr(file.name(), '.');
+        if(ext) ++ext;  // skip '.' itself, but not if not found!
+        if(strcasecmp(ext, "bmp") == 0)
+        {
+            BMPHeader PicData = ReadBitmapSpecs(file.name());
+            valid = ((PicData.width <= gfx_getScreenWidth()) && (PicData.height <= gfx_getScreenHeight())) && // Display only in list, when Bitmap not exceeding Display Resolution. Bigger Images are not listed. ...
+                    ((PicData.depth == 1) || (PicData.depth == 24));                          // ... and when the bitmap has a known/understood bitdepth.
+        }
+        else if ((strcasecmp(ext, "jpg") == 0) || (strcasecmp(ext, "jpeg") == 0))
+        {
+            if(JpegDec.decodeFsFile(file.name()))                                       // Display only in list, when file could be decoded ...
+                valid = (JpegDec.width <= gfx_getScreenWidth()) && (JpegDec.height <= gfx_getScreenHeight());    // ... and does not exceed the display size
+        }
+        if(valid && (slideshow_num_images < SLIDESHOW_MAX_IMAGES))
+        {
+            strncpy(slideshow_filenames[slideshow_num_images++], file.name(), MAX_FILENAME_LEN+1);
+        }
+    }
+    if(slideshow_num_images < 1)    slideshow_is_running = false;
 }
 
 void handleNotFound() {
@@ -1002,7 +984,7 @@ void handleNotFound() {
     temp += "</table></form><br><br><table border=2 bgcolor = white width = 500 cellpadding =5 ><caption><p><h2>You may want to browse to:</h2></p></caption>";
     temp += "<tr><th>";
     temp += "<a href='/'>Main Page</a><br>";
-    temp += "<a href='/wifi'>WiFi Settings</a><br>";
+    temp += "<a href='/settings'>Settings</a><br>";
     temp += "<a href='/filesystem'>Filemanager</a><br>";
     temp += "</th></tr></table><br><br>";
     temp += html_footer;
@@ -1025,15 +1007,30 @@ boolean captivePortal() {
   return false;
 }
 
-/** Wifi config page handler */
-void handleWifi()
+/** settings page handler */
+void handleSettings()
  {
-  //  Page: /wifi
-  byte i;
-  byte len ;
+  //  page: /settings
+  byte i, j, len;
   temp = "";
-  // Check for Site Parameters
-      if (server.hasArg("Reboot") )  // Reboot System
+  // check for site parameters
+
+    // parameter save does not exist, if the page is just called, only when the form here was submitted
+    // that check is necessary because there is no difference between an unchecked checkbox and a non-existing checkbox.
+    // so, without the condition, all checkboxes would be like unchecked just before - when just entering this page.
+    if(server.hasArg("save"))
+    {
+        // start slideshow automatically ?
+        SETTINGS_PUT_SLIDESHOW_AUTORUN(server.hasArg("autorun_slideshow"));
+        // show IP address on startup ?
+        SETTINGS_PUT_SHOW_IP(server.hasArg("show_ip"));
+        // show WiFi name (SSID) on startup ?
+        SETTINGS_PUT_SHOW_SSID(server.hasArg("show_ssid"));
+        // show WiFi (AP) password on startup ?
+        SETTINGS_PUT_WIFI_PWD_EXHIBITION(server.hasArg("exhibit_passwd"));
+    }
+
+    if (server.hasArg("Reboot") )  // reboot system
        {
          temp = "Rebooting System in 5 Seconds..";
          server.send ( 200, "text/html", temp );
@@ -1041,44 +1038,45 @@ void handleWifi()
          server.client().stop();
          WiFi.disconnect();
          delay(1000);
+         ESP.restart();
        }
 
-      if (server.hasArg("WiFiMode") && (server.arg("WiFiMode") == "1")  )  // STA Station Mode Connect to another WIFI Station
+    if (server.hasArg("WiFiMode") && (server.arg("WiFiMode") == "1")  )  // STA station mode connect to another WIFI station
        {
-        startMillis = millis(); // Reset Time Up Counter to avoid Idle Mode whiole operating
-        // Connect to existing STATION
+        startMillis = millis(); // reset time up counter to avoid idle mode while operating
+        // connect to existing STATION
         if ( sizeof(server.arg("WiFi_Network")) > 0  )
           {
-            Serial.println("STA Mode");
-            MyWiFiConfig.APSTA = false; // Access Point or Station Mode - false Station Mode
+            Serial.println("STA mode");
+            SETTINGS_SET_STA_MODE;
             temp = "";
-            for ( i = 0; i < APSTANameLen;i++) { MyWiFiConfig.APSTAName[i] =  0; }
+            for(i = 0; i < APSTANameLen; i++) MySettings.WiFiAPSTAName[i] = 0;
             temp = server.arg("WiFi_Network");
-            len =  temp.length();
-            for ( i = 0; i < len;i++)
-            {
-                  MyWiFiConfig.APSTAName[i] =  temp[i];
-            }
-         //   MyWiFiConfig.APSTAName[len+1] = '\0';
+            len = temp.length();
+            for(i = 0; i < len; i++) MySettings.WiFiAPSTAName[i] = temp[i];
+            MySettings.WiFiAPSTAName[len+1] = 0;
             temp = "";
 
-            for ( i = 0; i < WiFiPwdLen;i++)  { MyWiFiConfig.WiFiPwd[i] =  0; }
+            for(i = 0; i < WiFiPwdLen; i++)  MySettings.WiFiPwd[i] = 0;
             temp = server.arg("STAWLanPW");
-            len =  temp.length();
-            for ( i = 0; i < len;i++)
-              {
-                if (temp[i] > 32) //Steuerzeichen raus
-                  {
-                   MyWiFiConfig.WiFiPwd[i] =  temp[i];
-                  }
-              }
-        //    MyWiFiConfig.WiFiPwd[len+1] = '\0';
-            temp = "WiFi Connect to AP: -";
-            temp += MyWiFiConfig.APSTAName;
-            temp += "-<br>WiFi PW: -";
-            temp += MyWiFiConfig.WiFiPwd;
-            temp += "-<br>";
-            temp += "Connecting to STA Mode in 2 Seconds..<br>";
+            len = temp.length();
+            if(len > 0) // don't clear a previous password!
+            {
+                for( i = j = 0; i < len; i++)
+                {
+                    if (temp[i] > 32) // skip control chars
+                    {
+                        MySettings.WiFiPwd[j++] = temp[i];
+                    }
+                }
+                MySettings.WiFiPwd[j] = 0;
+            }
+            temp = "WiFi connect to AP: '";
+            temp += MySettings.WiFiAPSTAName;
+            // temp += "'<br>WiFi PW: -";
+            // temp += MySettings.WiFiPwd;
+            temp += "'<br>";
+            temp += "connecting to STA mode in 2 seconds..<br>";
             server.send ( 200, "text/html", temp );
             server.sendContent(temp);
             delay(2000);
@@ -1088,13 +1086,13 @@ void handleWifi()
             WiFi.disconnect();
             WiFi.softAPdisconnect(true);
             delay(500);
-           // ConnectWifiAP
-           bool SaveOk = saveCredentials();
+            // ConnectWifiAP
+            bool SaveOk = saveSettings();
             i = ConnectWifiAP();
             delay(700);
-            if (i != 3) // 4: WL_CONNECT_FAILED - Password is incorrect 1: WL_NO_SSID_AVAILin - Configured SSID cannot be reached
+            if (i != 3) // 4: WL_CONNECT_FAILED - Password is incorrect 1: WL_NO_SSID_AVAILin - configured SSID cannot be reached
               {
-                 Serial.print(F("Cannot Connect to specified Network. Reason: "));
+                 Serial.print(F("cannot connect to specified network. reason: "));
                  Serial.println(i);
                  server.client().stop();
                  delay(100);
@@ -1102,23 +1100,23 @@ void handleWifi()
                  delay(100);
                  WiFi.disconnect();
                  delay(1000);
-                 SetDefaultWiFiConfig();
+                 SetDefaultWiFiSettings();
                  CreateWifiSoftAP();
                  return;
               } else
               {
-                 // Safe Config
-                 bool SaveOk = saveCredentials();
-                 InitalizeHTTPServer();
+                 // connection succeeded - save settings
+                 bool SaveOk = saveSettings();
+                 InitializeHTTPServer();
                  return;
               }
           }
        }
 
-      if (server.hasArg("WiFiMode") && (server.arg("WiFiMode") == "2")  )  // Change AP Mode
+      if (server.hasArg("WiFiMode") && (server.arg("WiFiMode") == "2")  )  // change AP mode
        {
-        startMillis = millis(); // Reset Time Up Counter to avoid Idle Mode whiole operating
-        // Configure Access Point
+        startMillis = millis(); // reset time up counter to avoid idle mode whiole operating
+        // configure access point
         temp = server.arg("APPointName");
         len =  temp.length();
         temp = server.arg("APPW");
@@ -1128,80 +1126,78 @@ void handleWifi()
         {
             temp = "";
             Serial.println(F("APMode"));
-            MyWiFiConfig.APSTA = true; // Access Point or Sation Mode - true AP Mode
-            MyWiFiConfig.CapPortal = server.hasArg("CaptivePortal");
-            MyWiFiConfig.PwDReq = server.hasArg("PasswordReq");
+            SETTINGS_SET_AP_MODE;
+            SETTINGS_SET_PORTAL_CAPTIVITY(server.hasArg("CaptivePortal"));
+            SETTINGS_PUT_WIFI_PWD_EXHIBITION(!server.hasArg("PasswordReq"));
 
-            for ( i = 0; i < APSTANameLen;i++) { MyWiFiConfig.APSTAName[i] =  0; }
+            for (i = 0; i < APSTANameLen; i++)  MySettings.WiFiAPSTAName[i] = 0;
             temp = server.arg("APPointName");
-            len =  temp.length();
-            for ( i = 0; i < len;i++) { MyWiFiConfig.APSTAName[i] =  temp[i]; }
-            MyWiFiConfig.APSTAName[len+1] = '\0';
+            len = temp.length();
+            for (i = 0; i < len; i++) MySettings.WiFiAPSTAName[i] = temp[i];
+            MySettings.WiFiAPSTAName[len+1] = 0;
             temp = "";
-            for ( i = 0; i < WiFiPwdLen;i++)  {  MyWiFiConfig.WiFiPwd[i] =  0; }
+            for (i = 0; i < WiFiPwdLen; i++)    MySettings.WiFiPwd[i] = 0;
             temp = server.arg("APPW");
-            len =  temp.length();
-            for ( i = 0; i < len;i++)  { MyWiFiConfig.WiFiPwd[i] =  temp[i];  }
-            MyWiFiConfig.WiFiPwd[len+1] = '\0';
+            len = temp.length();
+            for (i = 0; i < len; i++)   MySettings.WiFiPwd[i] = temp[i];
+            MySettings.WiFiPwd[len+1] = 0;
             temp = "";
-            temp = saveCredentials() ? // Save AP Config
-                    "WiFi settings saved successfully. Reboot required." :
-                    "corrupted WiFi settings not saved.";
+            temp = saveSettings() ? // save AP settings
+                    "Settings saved successfully. Reboot required." :
+                    "corrupted settings not saved.";
         } else temp = (server.arg("APPW") != server.arg("APPWRepeat")) ?
                   "WiFi password(s) differ. Aborted." :
                   "WiFi password too short. Aborted.";
        // End Wifi
        }
+
   // HTML Header
   server.sendHeader("Cache-Control", "no-cache, no-store, must-revalidate");
   server.sendHeader("Pragma", "no-cache");
   server.sendHeader("Expires", "-1");
   server.setContentLength(CONTENT_LENGTH_UNKNOWN);
 // HTML Content
-  temp += "<!DOCTYPE HTML><html lang='de'><head><meta charset='UTF-8'><meta name= viewport content='width=device-width, initial-scale=1.0,'>";
+  temp += "<!DOCTYPE HTML><html lang='de'><head><meta charset='UTF-8'><meta name=viewport content='width=device-width, initial-scale=1.0,'>";
   server.send ( 200, "text/html", temp );
   server.sendContent(css_definition);
   temp = "";
-  temp += "<title>" PROJECT_TITLE " - WiFi Settings</title></head>";
+  temp += "<title>" PROJECT_TITLE " - Settings</title></head>";
   server.sendContent(temp);
   temp = "";
   temp += "<h2>WiFi Settings</h2><body><left>";
-  temp += "<table border=2 bgcolor = white width = 500 ><td><h4>Current WiFi Settings: </h4>";
+  temp += "<table border=2 bgcolor=white width=500><td><h4>Current WiFi Settings:</h4>";
   if (server.client().localIP() == apIP) {
      temp += "Mode : Soft Access Point (AP)<br>";
-     temp += "SSID : " + String (MyWiFiConfig.APSTAName) + "<br><br>";
+     temp += "SSID : " + String (MySettings.WiFiAPSTAName) + "<br><br>";
   } else {
      temp += "Mode : Station (STA) <br>";
-     temp += "SSID  :  "+ String (MyWiFiConfig.APSTAName) + "<br>";
+     temp += "SSID  :  "+ String (MySettings.WiFiAPSTAName) + "<br>";
      temp += "BSSID :  " + WiFi.BSSIDstr()+ "<br><br>";
   }
   temp += "</td></table><br>";
   server.sendContent(temp);
   temp = "";
-  temp += "<form action='/wifi' method='post'>";
+  temp += "<form action='/settings' method='post'><input type='hidden' name='save' value=1>";
   temp += "<table border=2 bgcolor = white width = 500><tr><th><br>";
-  if (MyWiFiConfig.APSTA == 1)
-    {
-      temp += "<input type='radio' value='1' name='WiFiMode' > WiFi Station Mode<br>";
-    } else
-    {
-      temp += "<input type='radio' value='1' name='WiFiMode' checked > WiFi Station Mode<br>";
-    }
+  temp += SETTINGS_IS_AP_MODE ? "<input type='radio' value='1' name='WiFiMode' > WiFi Station Mode<br>" :
+                                "<input type='radio' value='1' name='WiFiMode' checked > WiFi Station Mode<br>";
   temp += "Available WiFi Networks:<table border=2 bgcolor = white ></tr></th><td>Number </td><td>SSID  </td><td>Encryption </td><td>WiFi Strength </td>";
   server.sendContent(temp);
   temp = "";
   WiFi.scanDelete();
   int n = WiFi.scanNetworks(false, false); //WiFi.scanNetworks(async, show_hidden)
-  if (n > 0) {
-    for (int i = 0; i < n; i++) {
-    temp += "</tr></th>";
-    String Nrb = String(i);
-    temp += "<td>" + Nrb + "</td>";
-    temp += "<td>" + WiFi.SSID(i) +"</td>";
+  if (n > 0)
+  {
+    for (int i = 0; i < n; i++)
+    {
+      temp += "</tr></th>";
+      String Nrb = String(i);
+      temp += "<td>" + Nrb + "</td>";
+      temp += "<td>" + WiFi.SSID(i) +"</td>";
 
-    Nrb = GetEncryptionType(WiFi.encryptionType(i));
-    temp += "<td>"+ Nrb + "</td>";
-    temp += "<td>" + String(WiFi.RSSI(i)) + "</td>";
+      Nrb = GetEncryptionType(WiFi.encryptionType(i));
+      temp += "<td>"+ Nrb + "</td>";
+      temp += "<td>" + String(WiFi.RSSI(i)) + "</td>";
     }
   } else {
     temp += "</tr></th>";
@@ -1210,46 +1206,37 @@ void handleWifi()
     temp += "<td> --- </td>";
     temp += "<td> --- </td>";
   }
-  temp += "</table><table border=2 bgcolor = white ></tr></th><td>Connect to WiFi SSID: </td><td><select name='WiFi_Network' >";
-if (n > 0) {
+  temp += "</table><table border=2 bgcolor = white ></tr></th><td>Connect to WiFi SSID: </td><td><select name='WiFi_Network'>";
+  if (n > 0) {
     for (int i = 0; i < n; i++) {
-    temp += "<option value='" + WiFi.SSID(i) +"'>" + WiFi.SSID(i) +"</option>";
+      temp += "<option value='" + WiFi.SSID(i) +"'";
+      if(strcmp(WiFi.SSID(i).c_str(), MySettings.WiFiAPSTAName)==0)
+        temp += " selected";
+      temp += ">" + WiFi.SSID(i) +"</option>";
     }
   } else {
     temp += "<option value='No_WiFi_Network'>No WiFi network found !</option>";
   }
   server.sendContent(temp);
   temp = "";
-  temp += "</select></td></tr></th></tr></th><td>WiFi Password: </td><td>";
+  temp += "</select></td></tr></th><tr><td>WiFi Password: </td><td>";
   temp += "<input type='password' name='STAWLanPW' maxlength='40' size='40'>";
-  temp += "</td></tr></th><br></th></tr></table></table><table border=2 bgcolor = white width = 500 ><tr><th><br>";
+  temp += "</td></tr></th><br></th></tr></table></table><table border=2 bgcolor=white width=500><tr><th><br>";
   server.sendContent(temp);
-  temp = "";
-  if (MyWiFiConfig.APSTA == true)
-    {
-      temp += "<input type='radio' name='WiFiMode' value='2' checked> WiFi Access Point Mode <br>";
-    } else
-    {
-      temp += "<input type='radio' name='WiFiMode' value='2' > WiFi Access Point Mode <br>";
-    }
+  temp  = SETTINGS_IS_AP_MODE ? "<input type='radio' name='WiFiMode' value='2' checked> WiFi Access Point Mode<br>" :
+                                "<input type='radio' name='WiFiMode' value='2' > WiFi Access Point Mode<br>";
   temp += "<table border=2 bgcolor = white ></tr></th> <td>WiFi Access Point Name: </td><td>";
   server.sendContent(temp);
-  temp = "";
-  if (MyWiFiConfig.APSTA == true)
-    {
-      temp += "<input type='text' name='APPointName' maxlength='"+String(APSTANameLen-1)+"' size='30' value='" + String(MyWiFiConfig.APSTAName) + "'></td>";
-    } else
-    {
-      temp += "<input type='text' name='APPointName' maxlength='"+String(APSTANameLen-1)+"' size='30' ></td>";
-    }
+  temp = SETTINGS_IS_AP_MODE ? "<input type='text' name='APPointName' maxlength='"+String(APSTANameLen-1)+"' size='30' value='" + String(MySettings.WiFiAPSTAName) + "'></td>" :
+                               "<input type='text' name='APPointName' maxlength='"+String(APSTANameLen-1)+"' size='30' ></td>";
   server.sendContent(temp);
   temp = "";
   temp += "</tr></th><td>WiFi Password: </td><td>";
-  if (MyWiFiConfig.APSTA == true)
+  if (SETTINGS_IS_AP_MODE)
     {
-      temp += "<input type='password' name='APPW' maxlength='"+String(WiFiPwdLen-1)+"' size='30' value='" + String(MyWiFiConfig.WiFiPwd) + "'> </td>";
+      temp += "<input type='password' name='APPW' maxlength='"+String(WiFiPwdLen-1)+"' size='30' value='" + String(MySettings.WiFiPwd) + "'> </td>";
       temp += "</tr></th><td>Repeat WiFi Password: </td>";
-      temp += "<td><input type='password' name='APPWRepeat' maxlength='"+String(WiFiPwdLen-1)+"' size='30' value='" + String(MyWiFiConfig.WiFiPwd) + "'> </td>";
+      temp += "<td><input type='password' name='APPWRepeat' maxlength='"+String(WiFiPwdLen-1)+"' size='30' value='" + String(MySettings.WiFiPwd) + "'> </td>";
     } else
     {
       temp += "<input type='password' name='APPW' maxlength='"+String(WiFiPwdLen-1)+"' size='30'> </td>";
@@ -1258,33 +1245,41 @@ if (n > 0) {
     }
   temp += "</table>";
   server.sendContent(temp);
-  temp = "";
-  if (MyWiFiConfig.PwDReq)
-    {
-      temp += "<input type='checkbox' name='PasswordReq' checked> Password for Login required. ";
-    } else
-    {
-      temp += "<input type='checkbox' name='PasswordReq' > Password for Login required. ";
-    }
+  temp = SETTINGS_IS_WIFI_PASSWORD_REQUIRED ? "<input type='checkbox' name='PasswordReq' checked> Password for Login required." :
+                                              "<input type='checkbox' name='PasswordReq' > Password for Login required.";
   server.sendContent(temp);
-  temp = "";
-  if (MyWiFiConfig.CapPortal)
-    {
-      temp += "<input type='checkbox' name='CaptivePortal' checked> Activate Captive Portal";
-    } else
-    {
-      temp += "<input type='checkbox' name='CaptivePortal' > Activate Captive Portal";
-    }
+  temp = SETTINGS_IS_CAPTIVE_PORTAL ? "<input type='checkbox' name='CaptivePortal' checked> Activate Captive Portal" :
+                                      "<input type='checkbox' name='CaptivePortal' > Activate Captive Portal";
+  temp += "<br></tr></th></table>";
   server.sendContent(temp);
+
+  temp  = "<table border=2 bgcolor=white width=500 cellpadding=5><caption><h3>misc settings:</h3></caption><tr><th align=left><br>";
+  temp += "<input type='checkbox' name='autorun_slideshow'";
+  if(SETTINGS_IS_SLIDESHOW_AUTORUN)
+      temp += " checked";
+  temp += "> start slideshow automatically<br>";
+  temp += "<input type='checkbox' name='show_ip'";
+  if(SETTINGS_IS_IP_SHOWN)
+      temp += " checked";
+  temp += "> show IP address on startup<br>";
+  temp += "<input type='checkbox' name='show_ssid'";
+  if(SETTINGS_IS_SSID_SHOWN)
+      temp += " checked";
+  temp += "> show WiFi name (SSID) on startup<br>";
+  temp += "<input type='checkbox' name='exhibit_passwd'";
+  if(SETTINGS_IS_WIFI_PWD_EXHIBITED)
+      temp += " checked";
+  temp += "> show WiFi (AP) password on startup - <font color=red>unsafe!</font><br>";
+  temp += "<br></th></tr></table>";
+  server.sendContent(temp);
+
   temp = "";
-  temp += "<br></tr></th></table><br> <button type='submit' name='Settings' value='1' style='height: 50px; width: 140px' autofocus>Set WiFi Settings</button>";
+  temp += "<br> <button type='submit' name='Settings' value='1' style='height: 50px; width: 140px' autofocus>Save Settings</button>";
   temp += "<button type='submit' name='Reboot' value='1' style='height: 50px; width: 200px' >Reboot System</button>";
-  server.sendContent(temp);
-  temp = "";
   temp += "<button type='reset' name='action' value='1' style='height: 50px; width: 100px' >Reset</button></form>";
-  temp += "<table border=2 bgcolor = white width = 500 cellpadding =5 ><caption><p><h3>Systemlinks:</h2></p></caption><tr><th><br>";
   server.sendContent(temp);
-  temp = "";
+
+  temp  = "<table border=2 bgcolor=white width=500 cellpadding=5><caption><p><h3>Systemlinks:</h2></p></caption><tr><th><br>";
   temp += "<a href='/'>Main Page</a><br><br></th></tr></table><br><br>";
   temp += html_footer;
   temp += "</body></html>";
@@ -1335,8 +1330,12 @@ void handleSlideshow()
     server.client().stop(); // Stop is needed because we sent no content length
 }
 
-void doShowIP(void)
-{   IPAddress myIP = WiFi.localIP();
+void doShowWifi(bool force)
+{
+    gfx_clearScreen();
+
+    // ip address
+    { IPAddress myIP = WiFi.localIP();
     if((uint32_t)myIP == 0)
     {
         myIP = WiFi.softAPIP();
@@ -1345,19 +1344,40 @@ void doShowIP(void)
     else
         Serial.print("WiFi.localIP() = ");
     Serial.println(myIP);
-
-    gfx_clearScreen();
     // gfx_setTextColor(1); // never changed after setup(), so not necessary
-    gfx_drawString(0,32, myIP.toString().c_str());
+    if(force || SETTINGS_IS_IP_SHOWN)   gfx_drawString(10,12, myIP.toString().c_str());
+    }
+
+    // SSID
+    Serial.println("WiFi.SSID = " + WiFi.SSID());
+    if(force || SETTINGS_IS_SSID_SHOWN) gfx_drawString(10,32, WiFi.SSID().c_str());
+
+    // AP password
+    if(SETTINGS_IS_AP_MODE)
+    {
+        if(SETTINGS_IS_WIFI_PASSWORD_REQUIRED)
+        {
+            Serial.print("WiFi(AP) password = ");
+            Serial.println(MySettings.WiFiPwd);
+            if(SETTINGS_IS_WIFI_PWD_EXHIBITED)  gfx_drawString(10,52, MySettings.WiFiPwd);
+        }
+        else
+        {
+            Serial.println("'open' WiFi AP: unencrypted, unsafe, no password required");
+            if(SETTINGS_IS_WIFI_PWD_EXHIBITED)  gfx_drawString(10,52, "no pw required");
+        }
+    }
+
     gfx_flushBuffer();
 }
 
-void handleShowIP()
+void handleShowWifi()
 {
-    doShowIP();
+    doShowWifi(true);
     // "suspend" the slideshow for one cycle (no need to check if it is running)
     slideshow_last_switch = millis();
 
+    // "redirect" to main page
     server.sendHeader("Location", "/", true);
     server.sendHeader("Cache-Control", "no-cache, no-store, must-revalidate");
     server.sendHeader("Pragma", "no-cache");
