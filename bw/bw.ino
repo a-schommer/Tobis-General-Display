@@ -576,7 +576,7 @@ void drawBitmap_SPIFFS(const char *filename)
           file.seek(5*sizeof(uint32_t),SeekCur);    // skip remainder of header, go to start of color table
           inverter = (readrgbsum(file) > readrgbsum(file)) ? ~0 : 0;
       }
-      uint32_t rowSize = (width * depth / 8 + 3) & ~3;
+      uint32_t rowSize = (width * depth / 8 + 7) & ~7;
       if (height < 0)
       {
         height = -height;
