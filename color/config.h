@@ -18,7 +18,8 @@ by Arnold Schommer
 // to construct some u8g2/ucg object specific to the hardware being used:
 // the object name *must* be u8g2/ucg (as lots of source relies on this)
 // GuoYun + SSD1351:
-#define UCG_CONSTRUCTION Ucglib_SSD1351_18x128x128_HWSPI ucg(/*cd=*/ 17, /*cs=*/ 21, /*reset=*/ 16)
+#define UCG_DECLARATION Ucglib_SSD1351_18x128x128_HWSPI ucg
+#define UCG_CONSTRUCTION UCG_DECLARATION(/*cd=*/ 17, /*cs=*/ 21, /*reset=*/ 16)
 
 // name & password of the wifi to create if we can't join any:
 #define FALLBACK_APSTANAME  "ESP_Config"
