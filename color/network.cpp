@@ -28,6 +28,26 @@ extern int slideshow_current_index;
 void drawAnyImageType(const char *filename);
 /*********************************************************************/
 
+// what links can be excluded from the footer?
+#define LINK_MAIN           1   // main page
+#define LINK_FILEMANAGER    2
+#define LINK_SETTINGS       3
+
+/*********************************************************************/
+// data a) scanned from some (potential) gfx file to determine if it can be displayed
+// and b) returned to some "listing" function to display general info on that file
+
+enum GFI_TYPE { GFI_TYPE_INVALID, GFI_TYPE_BMP, GFI_TYPE_JPG, GFI_TYPE_GIF, GFI_TYPE_PNG };
+
+struct gfxFileInfo
+{
+    GFI_TYPE type;
+    uint32_t width;
+    uint32_t height;
+    uint16_t depth; // bits per pixel
+};
+/*********************************************************************/
+
 // CSS is used several times:
 static const char *css_definition = "<style type='text/css'><!-- * {font-family:sans-serif;} "
         "DIV.container {min-height: 10em; display: table-cell; vertical-align: middle} "
@@ -57,8 +77,6 @@ IPAddress netMsk(255, 255, 255, 0);
 
 // Current WiFi status
 short status = WL_IDLE_STATUS;
-
-File fsUploadFile;              // a File object to temporarily store the received file
 
 int slideshow_num_images = 0;
 char slideshow_filenames[SLIDESHOW_MAX_IMAGES][MAX_FILENAME_LEN+1];
@@ -168,45 +186,119 @@ char *urlencode(char const *from)
     return buffer;
 }
 
+// send some default "headers" forbidding caching - etc!
+// redirection *may* be ordered
+void httpHeaders(char *redirect = NULL)
+{
+    if(redirect && *redirect)   server.sendHeader("Location", redirect, true);
+    server.sendHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+    server.sendHeader("Pragma", "no-cache");
+    server.sendHeader("Expires", "-1");
+    server.setContentLength(CONTENT_LENGTH_UNKNOWN);
+}
+
+// redirect to the "main" page via http:
+void redirectMain(void)
+{
+    httpHeaders("/");
+    server.send(302, "text/plain", "");     // Empty content inhibits Content-length header so we have to close the socket ourselves.
+    server.client().stop();                 // Stop is needed because we sent no content length
+}
+
+// send some default "headers" forbidding caching, set content type to text/html, 
+// send common opening of the HTML page, including CSS & Title - as <title> & <h2>...
+void openHtml(char *label)
+{
+    String temp;
+    
+    httpHeaders();
+    
+    // HTML Content
+    temp  = "<!DOCTYPE HTML><html lang='de'><head><meta charset='UTF-8'><meta name= viewport content='width=device-width, initial-scale=1.0,'>";
+    temp += css_definition;
+    temp += "<title>" PROJECT_TITLE;
+    if(label)   temp += String(" - ") + label;
+    else        label = PROJECT_TITLE;
+    temp += "</title></head>";
+    temp += String("<body><h2>") + label + "</h2>";
+    server.send(200, "text/html", temp);
+}
+
+// add the footer with the links, copyright etc., close the HTML doc and server.client().stop()
+// exclude_what can be used to suppress the link to the page just displayed
+void finishHTML(int exclude_what)
+{
+    String temp;
+  
+    temp = "<br><table border=2 bgcolor=white width=400 cellpadding=5><thead><tr><th><h3>system links:</h3></th></tr></thead><tr><td>";
+    if(exclude_what != LINK_MAIN)        temp += "<a href='/'>Main Page</a><br><br>";
+    if(exclude_what != LINK_SETTINGS)    temp += "<a href='/settings'>Settings</a><br><br>";
+    if(exclude_what != LINK_FILEMANAGER) temp += "<a href='/filesystem'>Filemanager</a><br><br>";
+    if(slideshow_num_images > 1)
+    {
+        temp += slideshow_is_running ? "<a href='/slideshow?off=1'>stop slideshow</a><br><br>" : "<a href='/slideshow?on=1'>start slideshow</a><br><br>";
+    }
+    temp += "<a href='/showwifi'>show WiFi info (like on startup; on the display)</a><br>";
+    server.sendContent(temp);
+    temp = String("</td></tr></table><br>") + html_footer + "</body></html>";
+    server.sendContent(temp);
+    server.client().stop(); // Stop is needed because we sent no content length
+    temp = "";
+}
+
 void handleFileUpload(void)
 {
-   if (server.uri() != "/upload") return;
-   HTTPUpload& upload = server.upload();
-   if (upload.status == UPLOAD_FILE_START) {
-     String filename = upload.filename;
-     if (upload.filename.length() > 30) {
-      upload.filename = upload.filename.substring(upload.filename.length() - 30, upload.filename.length());  // shorten filename to 30 chars
-     }
-     Serial.println("FileUpload Name: " + upload.filename);
-     if (!filename.startsWith("/")) filename = "/" + filename;
-     fsUploadFile = SPIFFS.open("/" + server.urlDecode(upload.filename), "w");
-     filename = String();
-   } else if (upload.status == UPLOAD_FILE_WRITE) {
-     if (fsUploadFile)  fsUploadFile.write(upload.buf, upload.currentSize);
-   } else if (upload.status == UPLOAD_FILE_END) {
-     if (fsUploadFile)  fsUploadFile.close();
-     handleDisplayFS();
-   }
- }
+    static File fsUploadFile;           // a File object to temporarily store the received file
+
+    if (server.uri() != "/upload") return;
+//Serial.print(millis());
+//Serial.print(": handleFileUpload(), ");
+    HTTPUpload& upload = server.upload();
+    if (upload.status == UPLOAD_FILE_START)
+    {
+//Serial.print("UPLOAD_FILE_START, filename ~ ");
+        String filename = upload.filename;
+        if (filename.length() > 30) {
+            filename = filename.substring(filename.length() - 30, filename.length());  // shorten filename to 30 chars
+        }
+//Serial.println("FileUpload Name: " + filename);
+        if (!filename.startsWith("/")) filename = "/" + filename;
+        fsUploadFile = SPIFFS.open(server.urlDecode(filename), "w");
+        filename = String();
+    }
+    else if (upload.status == UPLOAD_FILE_WRITE)
+    {
+//Serial.print("UPLOAD_FILE_WRITE, size: ");
+//Serial.println(upload.currentSize);
+        if (fsUploadFile)  fsUploadFile.write(upload.buf, upload.currentSize);
+    }
+    else if (upload.status == UPLOAD_FILE_END)
+    {
+//Serial.println("UPLOAD_FILE_END");
+        if (fsUploadFile)  fsUploadFile.close();
+        handleDisplayFS();
+    }
+    else
+    {
+//if (upload.status == UPLOAD_FILE_END) Serial.println("UPLOAD_FILE_ABORTED");
+//else{
+//Serial.print("*unexpected* upload.status = ");
+//Serial.println(upload.status);
+//}
+
+        if (fsUploadFile)  fsUploadFile.close();
+
+        openHtml((char *)((upload.status == UPLOAD_FILE_END) ? "Upload aborted" : ("Stale upload, unknown status "+String(upload.status)).c_str()));
+        finishHTML(0);
+    }
+}
 
 void handleDisplayFS(void)                       //  Page: /filesystem
 {
+Serial.println("handleDisplayFS()");
   String temp ="";
-  // HTML Header
-  server.sendHeader("Cache-Control", "no-cache, no-store, must-revalidate");
-  server.sendHeader("Pragma", "no-cache");
-  server.sendHeader("Expires", "-1");
-  server.setContentLength(CONTENT_LENGTH_UNKNOWN);
-  // HTML Content
-  server.send ( 200, "text/html", temp );
-  temp += "<!DOCTYPE HTML><html lang='de'><head><meta charset='UTF-8'><meta name= viewport content='width=device-width, initial-scale=1.0,'>";
-  server.sendContent(temp);
-  server.sendContent(css_definition);
-  temp = "";
-  temp += "<title>" PROJECT_TITLE " - File System Manager</title></head>";
-  temp += "<h2>Serial Peripheral Interface Flash Filesystem</h2><body><left>";
-  server.sendContent(temp);
-  temp = "";
+  
+  openHtml("File System Manager");
   if (server.args() > 0) // Parameter wurden ubergeben
     {
       if (server.hasArg("delete"))
@@ -242,8 +334,8 @@ void handleDisplayFS(void)                       //  Page: /filesystem
   server.sendContent(temp);
   temp = "";
   // Check for Site Parameters
-  temp += "<table border=2 bgcolor = white width = 400><tr><th><br>";
-  temp += "<h4>Available Files on SPIFFS:</h4><table border=2 bgcolor = white ></tr></th><td>Filename</td><td>Size</td><td>Action </td></tr></th>";
+  temp += "<table border=2 bgcolor=white width=480><tr><th>";
+  temp += "<h4>Available Files on SPIFFS:</h4><table border=0 bgcolor=white></tr></th><td>Filename</td><td>Size</td><td>Action </td></tr></th>";
   server.sendContent(temp);
   temp = "";
   ESP_CLASS_DIR root = esp_openDir("/");
@@ -257,48 +349,104 @@ void handleDisplayFS(void)                       //  Page: /filesystem
   }
   temp += "</tr></th>";
   temp += "</td></tr></th><br></th></tr></table></table><br>";
+
   temp += "<table border=2 bgcolor=white width=400><td><h4>Upload</h4>";
   temp += "<label> Choose File: </label>";
   temp += "<form method='POST' action='/upload' enctype='multipart/form-data' style='height:35px;'><input type='file' name='upload' style='height:35px; font-size:13px;' required>\r\n<input type='submit' value='Upload' class='button'></form>";
   temp += " </table><br>";
   server.sendContent(temp);
-  temp = "";
-  temp += "<td><a href =filesystem?format=on> Format SPIFFS Filesystem. (Takes up to 30 Seconds) </a></td>";
-  temp += "<table border=2 bgcolor=white width=500 cellpadding=5><caption><p><h3>Systemlinks:</h2></p></caption><tr><th><br>";
-  temp += " <a href='/'>Main Page</a><br><br></th></tr></table><br><br>";
-  server.sendContent(temp);
-  temp = "";
-  temp += html_footer;
-  temp += "</body></html>";
-  //server.send ( 200, "", temp );
-  server.sendContent(temp);
-  server.client().stop(); // Stop is needed because we sent no content length
-  temp = "";
- }
 
-void handleRoot(void)                           //  Main Page
+  temp  = "<table border=2 bgcolor=white width=400><td><h4>Format SPIFFS Filesystem</h4>";
+  temp += "<a href=filesystem?format=on>Go! (takes up to 30 seconds)</a></table><br>";
+  server.sendContent(temp);
+  
+  finishHTML(LINK_FILEMANAGER);
+}
+
+// a) check, if a file (exists and) is displayable
+// and b) if so, return its "basic" data: type, size, bit-depth
+// returns NULL, if the file is not displayable
+struct gfxFileInfo *scanFile(const char *filename)
+{
+    static struct gfxFileInfo result;
+    
+    bool valid = false;
+    char *ext = strrchr(filename, '.');
+    if(!ext)    return NULL;    // no extension found => type undeterminable => invalid
+    ++ext;  // skip '.' itself (for the following comparisons)
+    
+    if(strcasecmp(ext, "bmp") == 0)
+    {
+        BMPHeader PicData = ReadBitmapSpecs(filename);
+        if (((PicData.width <= gfx_getScreenWidth()) && (PicData.height <= gfx_getScreenHeight())) &&
+          ((PicData.depth == 1) || (PicData.depth == 24)))                          // ... and when the bitmap has a known/understood bitdepth.
+        {
+            result.type   = GFI_TYPE_BMP;
+            result.width  = PicData.width;
+            result.height = PicData.height;
+            result.depth  = PicData.depth;
+            return &result;
+        }
+//else{
+//Serial.println(String(file.name())+": BMP "+String(PicData.width)+"*"+String(PicData.height)+"*"+String(PicData.depth));
+//if(PicData.width  > gfx_getScreenWidth())  Serial.println(String("\twidth > ")+String(gfx_getScreenWidth()));
+//if(PicData.height > gfx_getScreenHeight()) Serial.println(String("\theight > ")+String(gfx_getScreenHeight()));
+//if((PicData.depth != 1) && (PicData.depth != 24)) Serial.println("\tdepth neither 1 nor 24");
+//}
+    }
+    else if ((strcasecmp(ext, "jpg") == 0) || (strcasecmp(ext, "jpeg") == 0))
+    {
+        if(JpegDec.decodeFsFile(filename))
+            if(JpegDec.width <= gfx_getScreenWidth() && JpegDec.height <= gfx_getScreenHeight())
+            {
+                result.type   = GFI_TYPE_JPG;
+                result.width  = JpegDec.width;
+                result.height = JpegDec.height;
+                result.depth  = 24;
+                return &result;
+            }
+//else{
+//Serial.println(String(file.name())+": JPEG "+String(JpegDec.width)+"*"+String(JpegDec.height));
+//if(JpegDec.width  > gfx_getScreenWidth())  Serial.println(String("\twidth > ")+String(gfx_getScreenWidth()));
+//if(JpegDec.height > gfx_getScreenHeight()) Serial.println(String("\theight > ")+String(gfx_getScreenHeight()));
+//}
+    }
+////    else if (strcasecmp(ext, "gif") == 0)
+////    {
+////        if(???(filename))
+////            if(`?.width <= gfx_getScreenWidth() && ?.height <= gfx_getScreenHeight())
+////                {
+////                result.type   = GFI_TYPE_GIF;
+////                result.width  = ?.width;
+////                result.height = ?.height;
+////                result.depth  = 8;
+////                return &result;
+////            }
+////    }
+////    else if (strcasecmp(ext, "png") == 0)
+////    {
+////        if(???(filename))
+////            if(`?.width <= gfx_getScreenWidth() && ?.height <= gfx_getScreenHeight())
+////                {
+////                result.type   = GFI_TYPE_PNG;
+////                result.width  = ?.width;
+////                result.height = ?.height;
+////                result.depth  = ?;
+////                return &result;
+////            }
+////    }
+
+    return NULL;        // not recognized => invalid
+}
+
+// main page: list of images, option to display any of them
+void handleRoot(void)
 {
  String temp = "";
  short PicCount = 0;
  byte ServArgs = 0;
 
-//Building Page
-  // HTML Header
-  server.sendHeader("Cache-Control", "no-cache, no-store, must-revalidate");
-  server.sendHeader("Pragma", "no-cache");
-  server.sendHeader("Expires", "-1");
-  server.setContentLength(CONTENT_LENGTH_UNKNOWN);
-// HTML Content
-  server.send ( 200, "text/html", temp );   // Speichersparen - Schon mal dem Client senden
-  temp += "<!DOCTYPE HTML><html lang='de'><head><meta charset='UTF-8'><meta name= viewport content='width=device-width, initial-scale=1.0,'>";
-  server.sendContent(temp);
-  server.sendContent(css_definition);
-  temp = "";
-  temp += "<title>" PROJECT_TITLE "</title></head>";
-  temp += "<h2>LED Display</h2>";
-  temp += "<body>";
-  server.sendContent(temp);
-  temp = "";
+  openHtml(NULL);
 // Processing User Request
 if (server.args() > 0) // Parameter wurden ubergeben
 {
@@ -327,58 +475,44 @@ if (server.args() > 0) // Parameter wurden ubergeben
   PicCount = 1;
   while (file = esp_openNextFile(root))
   {
-    bool valid = false;
-    char *ext = strrchr(file.name(), '.');
-    if(ext) ++ext;  // skip '.' itself, but not if not found!
-    if(strcasecmp(ext, "bmp") == 0)
+    struct gfxFileInfo *gfi = scanFile(file.name());
+    if(gfi)
     {
-      BMPHeader PicData = ReadBitmapSpecs(file.name());
-      if (((PicData.width <= gfx_getScreenWidth()) && (PicData.height <= gfx_getScreenHeight())) && // Display only in list, when Bitmap not exceeding Display Resolution. Bigger Images are not listed. ...
-          ((PicData.depth == 1) || (PicData.depth == 24)))                          // ... and when the bitmap has a known/understood bitdepth.
+        bool valid = false;
+        switch(gfi->type)
         {
-          temp = String(PicData.width) + "*" + String(PicData.height) + "px*" + String(PicData.depth) + "bit";
-          valid = true;
-        }
-    }
-    else if ((strcasecmp(ext, "jpg") == 0) || (strcasecmp(ext, "jpeg") == 0))
-    {
-        if(JpegDec.decodeFsFile(file.name()))                                       // Display only in list, when file could be decoded ...
-            if(JpegDec.width <= gfx_getScreenWidth() && JpegDec.height <= gfx_getScreenHeight())    // ... and does not exceed the display size
-            {
-                temp = String(JpegDec.width) + "*" + String(JpegDec.height) + "px";
+            case GFI_TYPE_BMP:
+                temp = String(gfi->width) + "*" + String(gfi->height) + "px*" + String(gfi->depth) + "bit";
                 valid = true;
-            }
-    }
-    if(valid)
-    {
-        temp = "<tr><th><label for='radio1'><img src='"+String(file.name())+"' alt='"+ String(file.name())+"' border='3' bordercolor=green> Image "+ PicCount+"</label><input type='radio' value='"+ String(file.name())+"' name='PicSelect'/><br> "+String(file.name())+": " + temp;
-        temp += "; filesize: "+ formatBytes(file.size()) + "</th></tr>";
-        server.sendContent(temp);
-        if(PicCount <= SLIDESHOW_MAX_IMAGES)
-        {
-            strncpy(slideshow_filenames[PicCount-1], file.name(), MAX_FILENAME_LEN+1);
+                break;
+            case GFI_TYPE_JPG:
+                temp = String(gfi->width) + "*" + String(gfi->height) + "px";
+                valid = true;
+                break;
+//            case GFI_TYPE_GIF:
+//                break;
+//            case GFI_TYPE_PNG:
+//                break;
         }
-        PicCount++;
+        if(valid)
+        {
+            temp = "<tr><th><label for='radio1'><img src='"+String(file.name())+"' alt='"+ String(file.name())+"' border='3' bordercolor=green> Image "+ PicCount+"</label><input type='radio' value='"+ String(file.name())+"' name='PicSelect'/><br> "+String(file.name())+": " + temp;
+            temp += "; filesize: "+ formatBytes(file.size()) + "</th></tr>";
+            server.sendContent(temp);
+            if(PicCount <= SLIDESHOW_MAX_IMAGES)
+            {
+                strncpy(slideshow_filenames[PicCount-1], file.name(), MAX_FILENAME_LEN+1);
+            }
+            PicCount++;
+        }
     }
   }
   slideshow_num_images = PicCount - 1;
   temp = "<tr><th><button type='submit' name='action' value='0' style='height: 50px; width: 280px'>Show Image on Display</button></th></tr>";
   temp += "</form></table>";
-  temp += "<br><table border=2 bgcolor = white width = 280 cellpadding =5 ><caption><p><h3>Systemlinks:</h2></p></caption>";
-  temp += "<tr><td><br>";
-  temp += "<a href='/settings'>Settings</a><br><br>";
-  temp += "<a href='/filesystem'>Filemanager</a><br><br>";
-  if(slideshow_num_images > 1)
-  {
-      temp += slideshow_is_running ? "<a href='/slideshow?off=1'>stop slideshow</a><br><br>" : "<a href='/slideshow?on=1'>start slideshow</a><br><br>";
-  }
-  temp += "<a href='/showwifi'>show WiFi info (like on startup; on the display)</a><br><br>";
-  temp += "</td></tr></table><br><br>";
-  temp += html_footer;
-  temp += "</body></html>";
   server.sendContent(temp);
-  temp = "";
-  server.client().stop(); // Stop is needed because we sent no content length
+
+  finishHTML(LINK_MAIN);
 }
 
 // create/update the "index" of images that may be displayed - to be used in the slideshow
@@ -390,23 +524,13 @@ void scan_images_for_slideshow(void)
     ESP_CLASS_DIR root = esp_openDir("/");
 
     slideshow_num_images = 0;
-    while (file = esp_openNextFile(root))
+    while(file = esp_openNextFile(root) && (slideshow_num_images < SLIDESHOW_MAX_IMAGES))
     {
-        bool valid = false;
-        char *ext = strrchr(file.name(), '.');
-        if(ext) ++ext;  // skip '.' itself, but not if not found!
-        if(strcasecmp(ext, "bmp") == 0)
-        {
-            BMPHeader PicData = ReadBitmapSpecs(file.name());
-            valid = ((PicData.width <= gfx_getScreenWidth()) && (PicData.height <= gfx_getScreenHeight())) && // Display only in list, when Bitmap not exceeding Display Resolution. Bigger Images are not listed. ...
-                    ((PicData.depth == 1) || (PicData.depth == 24));                          // ... and when the bitmap has a known/understood bitdepth.
-        }
-        else if ((strcasecmp(ext, "jpg") == 0) || (strcasecmp(ext, "jpeg") == 0))
-        {
-            if(JpegDec.decodeFsFile(file.name()))                                       // Display only in list, when file could be decoded ...
-                valid = (JpegDec.width <= gfx_getScreenWidth()) && (JpegDec.height <= gfx_getScreenHeight());    // ... and does not exceed the display size
-        }
-        if(valid && (slideshow_num_images < SLIDESHOW_MAX_IMAGES))
+        //bool valid;
+        struct gfxFileInfo *gfi = scanFile(file.name());
+        //valid = gfi ? (gfi->type != GFI_TYPE_INVALID) : false;
+        //if(valid && (slideshow_num_images < SLIDESHOW_MAX_IMAGES))
+        if(gfi && (gfi->type != GFI_TYPE_INVALID))
         {
             strncpy(slideshow_filenames[slideshow_num_images++], file.name(), MAX_FILENAME_LEN+1);
         }
@@ -415,42 +539,36 @@ void scan_images_for_slideshow(void)
 }
 
 void handleNotFound(void)
-{
+{   uint8_t i;
+//Serial.print("handleNotFound() starting, server.uri() ~ ");
+//Serial.println(server.uri());
+
     // If captive portal redirect instead of displaying the error page.
     if(captivePortal()) return;
+//Serial.println("handleNotFound() after captivePortal()");
   
     // if there is an according file: fine
     if (handleFileRead(server.urlDecode(server.uri()))) return;
-    
+//Serial.println("handleNotFound() no file found");
+
     // else: send error page:
     String temp = "";
-    // HTML Header
-    server.sendHeader("Cache-Control", "no-cache, no-store, must-revalidate");
-    server.sendHeader("Pragma", "no-cache");
-    server.sendHeader("Expires", "-1");
-    server.setContentLength(CONTENT_LENGTH_UNKNOWN);
+    httpHeaders();
     // HTML Content
     temp += "<!DOCTYPE HTML><html lang='de'><head><meta charset='UTF-8'><meta name= viewport content='width=device-width, initial-scale=1.0,'>";
     temp += css_definition;
     temp += "<title>" PROJECT_TITLE " - File not found</title></head>";
-    temp += "<h2> 404 File Not Found</h2><br>";
-    temp += "<h4>Debug Information:</h4><br>";
-    temp += "<body>";
-    temp += "URI: ";
-    temp += server.uri();
+    temp += "<body><h2>404 File Not Found</h2>";
+    temp += "<h4>Debug Information:</h4>";
+    temp += "<pre>URI: "+server.uri();
     temp += "\nMethod: ";
     temp += ( server.method() == HTTP_GET ) ? "GET" : "POST";
-    temp += "<br>Arguments: ";
-    temp += server.args();
+    temp += String("\n\nArguments: ")+server.args()+"\n";
+    for(i=0; i<server.args();    i++) temp += " " + server.argName(i)    + ": " + server.arg(i)    + "\n";
+    temp += "\nServer HostHeader: "+ server.hostHeader();
     temp += "\n";
-      for ( uint8_t i = 0; i < server.args(); i++ ) {
-        temp += " " + server.argName ( i ) + ": " + server.arg ( i ) + "\n";
-        }
-    temp += "<br>Server Hostheader: "+ server.hostHeader();
-    for ( uint8_t i = 0; i < server.headers(); i++ ) {
-        temp += " " + server.headerName ( i ) + ": " + server.header ( i ) + "\n<br>";
-        }
-    temp += "</table></form><br><br><table border=2 bgcolor = white width = 500 cellpadding =5 ><caption><p><h2>You may want to browse to:</h2></p></caption>";
+    for(i=0; i<server.headers(); i++) temp += " " + server.headerName(i) + ": " + server.header(i) + "\n";
+    temp += "</pre><br><table border=2 bgcolor=white width=500 cellpadding=5><caption><p><h2>You may want to browse to:</h2></p></caption>";
     temp += "<tr><th>";
     temp += "<a href='/'>Main Page</a><br>";
     temp += "<a href='/settings'>Settings</a><br>";
@@ -458,7 +576,7 @@ void handleNotFound(void)
     temp += "</th></tr></table><br><br>";
     temp += html_footer;
     temp += "</body></html>";
-    server.send ( 404, "", temp );
+    server.send ( 404, "text/html", temp );
     server.client().stop(); // Stop is needed because we sent no content length
 }
 
@@ -617,20 +735,7 @@ void handleSettings(void)
        // End Wifi
        }
 
-  // HTML Header
-  server.sendHeader("Cache-Control", "no-cache, no-store, must-revalidate");
-  server.sendHeader("Pragma", "no-cache");
-  server.sendHeader("Expires", "-1");
-  server.setContentLength(CONTENT_LENGTH_UNKNOWN);
-// HTML Content
-  temp += "<!DOCTYPE HTML><html lang='de'><head><meta charset='UTF-8'><meta name=viewport content='width=device-width, initial-scale=1.0,'>";
-  server.send ( 200, "text/html", temp );
-  server.sendContent(css_definition);
-  temp = "";
-  temp += "<title>" PROJECT_TITLE " - Settings</title></head>";
-  server.sendContent(temp);
-  temp = "";
-  temp += "<h2>WiFi Settings</h2><body><left>";
+  openHtml("Settings");
   temp += "<table border=2 bgcolor=white width=500><td><h4>Current WiFi Settings:</h4>";
   if (server.client().localIP() == apIP) {
      temp += "Mode : Soft Access Point (AP)<br>";
@@ -745,33 +850,7 @@ void handleSettings(void)
   temp += "<button type='reset' name='action' value='1' style='height: 50px; width: 100px' >Reset</button></form>";
   server.sendContent(temp);
 
-  temp  = "<table border=2 bgcolor=white width=500 cellpadding=5><caption><p><h3>Systemlinks:</h2></p></caption><tr><th><br>";
-  temp += "<a href='/'>Main Page</a><br><br></th></tr></table><br><br>";
-  temp += html_footer;
-  temp += "</body></html>";
-  server.sendContent(temp);
-  server.client().stop(); // Stop is needed because we sent no content length
-  temp = "";
-}
-
-void handleUploadSave(void)
-{
-  // String FileData;
-  String temp = "";
-  for (byte i = 0; i < server.args(); i++)
-  {
-    temp += "Arg " + (String)i + " –> ";   //Include the current iteration value
-    temp += server.argName(i) + ": ";     //Get the name of the parameter
-    temp += server.arg(i) + "\n";              //Get the value of the parameter
-  }
-  // server.send(200, "text/plain", temp);       //Response to the HTTP request
-  // FileData = server.arg("datei");
-  server.sendHeader("Location", "filesystem", true);
-  server.sendHeader("Cache-Control", "no-cache, no-store, must-revalidate");
-  server.sendHeader("Pragma", "no-cache");
-  server.sendHeader("Expires", "-1");
-  server.send ( 302, "text/plain", "");  // Empty content inhibits Content-length header so we have to close the socket ourselves.
-  server.client().stop(); // Stop is needed because we sent no content length
+    finishHTML(LINK_SETTINGS);
 }
 
 void handleSlideshow(void)
@@ -788,12 +867,8 @@ void handleSlideshow(void)
     }
     else Serial.println("Slideshow ???");
 
-    server.sendHeader("Location", "/", true);
-    server.sendHeader("Cache-Control", "no-cache, no-store, must-revalidate");
-    server.sendHeader("Pragma", "no-cache");
-    server.sendHeader("Expires", "-1");
-    server.send ( 302, "text/plain", "");  // Empty content inhibits Content-length header so we have to close the socket ourselves.
-    server.client().stop(); // Stop is needed because we sent no content length
+    // "redirect" to main page, "/"
+    redirectMain();
 }
 
 void doShowWifi(bool force)
@@ -843,13 +918,8 @@ void handleShowWifi(void)
     // "suspend" the slideshow for one cycle (no need to check if it is running)
     slideshow_last_switch = millis();
 
-    // "redirect" to main page
-    server.sendHeader("Location", "/", true);
-    server.sendHeader("Cache-Control", "no-cache, no-store, must-revalidate");
-    server.sendHeader("Pragma", "no-cache");
-    server.sendHeader("Expires", "-1");
-    server.send ( 302, "text/plain", "");  // Empty content inhibits Content-length header so we have to close the socket ourselves.
-    server.client().stop(); // Stop is needed because we sent no content length
+    // "redirect" to main page, "/"
+    redirectMain();
 }
 
 // Is this an IP?
@@ -895,34 +965,40 @@ String formatBytes(size_t bytes)    // create human readable versions of memory 
 
 String getContentType(String filename)      // convert the file extension to the MIME type
 {
-  char *ext = strrchr(filename.c_str(), '.');
-  if(ext) ++ext;    // skip '.' itself, but not if not found!
-
-  if      (strcasecmp(ext, "htm")  == 0 ||
-           strcasecmp(ext, "html") == 0)    return "text/html";
-  else if (strcasecmp(ext, "css") == 0)     return "text/css";
-  else if (strcasecmp(ext, "js") == 0)      return "application/javascript";
-  else if (strcasecmp(ext, "ico") == 0)     return "image/x-icon";
-  else if (strcasecmp(ext, "gz") == 0)      return "application/x-gzip";
-  else if (strcasecmp(ext, "bmp") == 0)     return "image/bmp";
-  else if (strcasecmp(ext, "tif") == 0)     return "image/tiff";
-  else if (strcasecmp(ext, "pbm") == 0)     return "image/x-portable-bitmap";
-  else if (strcasecmp(ext, "jpg")  == 0 ||
-           strcasecmp(ext, "jpeg") == 0 )   return "image/jpeg";
-  else if (strcasecmp(ext, "gif") == 0)     return "image/gif";
-  else if (strcasecmp(ext, "png") == 0)     return "image/png";
-  else if (strcasecmp(ext, "svg") == 0)     return "image/svg+xml";
-  else if (strcasecmp(ext, "wav") == 0)     return "audio/x-wav";
-  else if (strcasecmp(ext, "zip") == 0)     return "application/zip";
-  else if (strcasecmp(ext, "rgb") == 0)     return "image/x-rg";
- // Complete List on https://wiki.selfhtml.org/wiki/MIME-Type/Übersicht
-  return "text/plain";
+//Serial.println(String("getContentType(")+filename+")");
+    char *ext = strrchr(filename.c_str(), '.');
+    if(ext)
+    {
+        ++ext;    // skip '.' itself, but not if not found!
+        if      (strcasecmp(ext, "htm")  == 0 ||
+                 strcasecmp(ext, "html") == 0)    return "text/html";
+        else if (strcasecmp(ext, "css") == 0)     return "text/css";
+        else if (strcasecmp(ext, "js") == 0)      return "application/javascript";
+        else if (strcasecmp(ext, "ico") == 0)     return "image/x-icon";
+        else if (strcasecmp(ext, "gz") == 0)      return "application/x-gzip";
+        else if (strcasecmp(ext, "bmp") == 0)     return "image/bmp";
+        else if (strcasecmp(ext, "tif") == 0)     return "image/tiff";
+        else if (strcasecmp(ext, "pbm") == 0)     return "image/x-portable-bitmap";
+        else if (strcasecmp(ext, "jpg")  == 0 ||
+                strcasecmp(ext, "jpeg") == 0 )   return "image/jpeg";
+        else if (strcasecmp(ext, "gif") == 0)     return "image/gif";
+        else if (strcasecmp(ext, "png") == 0)     return "image/png";
+        else if (strcasecmp(ext, "svg") == 0)     return "image/svg+xml";
+        else if (strcasecmp(ext, "wav") == 0)     return "audio/x-wav";
+        else if (strcasecmp(ext, "zip") == 0)     return "application/zip";
+        else if (strcasecmp(ext, "rgb") == 0)     return "image/x-rg";
+        // Complete List on https://wiki.selfhtml.org/wiki/MIME-Type/Übersicht
+    }
+    return "text/plain";
 }
 
 bool handleFileRead(String path)    // send the right file to the client (if it exists)
 {
+//Serial.println(String("handleFileRead(")+path+")");
   if (path.endsWith("/")) path += "index.html";          // If a folder is requested, send the index file
+//Serial.println(String("handleFileRead(")+path+") #2");
   String contentType = getContentType(path);             // Get the MIME type
+//Serial.println(String("handleFileRead(")+path+") #3");
   String pathWithGz = path + ".gz";
   if (SPIFFS.exists(pathWithGz) || SPIFFS.exists(path)) { // If the file exists, either as a compressed archive, or normal
     if (SPIFFS.exists(pathWithGz))                         // If there's a compressed version available
@@ -944,9 +1020,8 @@ void InitializeHTTPServer(void)
   server.on("/filesystem", HTTP_GET, handleDisplayFS);
   server.on("/slideshow", HTTP_GET, handleSlideshow);
   server.on("/showwifi", HTTP_GET, handleShowWifi);
-  server.on("/upload", HTTP_POST, []() {
-  server.send(200, "text/plain", "");
-  }, handleFileUpload);
+  // server.on("/upload", HTTP_POST, handleFileUpload);    Upload will not work!!!
+  server.on("/upload", HTTP_POST, []() { server.send(200, "text/plain", ""); }, handleFileUpload);
   if(SETTINGS_IS_CAPTIVE_PORTAL)
   {
     server.on("/generate_204", handleRoot);     //Android captive portal. Maybe not needed. Might be handled by notFound handler.
