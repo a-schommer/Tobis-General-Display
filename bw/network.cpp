@@ -530,7 +530,7 @@ void scan_images_for_slideshow(void)
     ESP_CLASS_DIR root = esp_openDir("/");
 
     slideshow_num_images = 0;
-    while(file = esp_openNextFile(root) && (slideshow_num_images < SLIDESHOW_MAX_IMAGES))
+    while((bool)(file = esp_openNextFile(root)) && (slideshow_num_images < SLIDESHOW_MAX_IMAGES))
     {
         //bool valid;
         struct gfxFileInfo *gfi = scanFile(file.name());
